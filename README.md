@@ -1,8 +1,18 @@
+```text
+      _        ___        ___ 
+     / \      / _ \      / _ \
+    / _ \    | | | |    | | | |
+   / ___ \   | |_| |    | |_| |
+  /_/   \_\   \___/      \___/
+
+        AGENT  ⇄  AGENT   COMMS
+```
+
 # a2a
 
-Agent-to-agent bridge for [Claude Code](https://claude.ai/claude-code): multiple Claude instances in **tmux** register with a small **HTTP bridge**, discover each other, and send messages that arrive as **`<a2a_message>`** envelopes pasted into the peer’s terminal.
+Agent-to-agent bridge for [Claude Code](https://claude.ai/claude-code): multiple Claude instances in **tmux** register with a small **HTTP bridge**, discover each other, and send messages that arri[...]
 
-This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks, or scripts can **push text into a running Claude Code session** and optionally call **`a2a`** to message registered peers.
+This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks, or scripts can **push text into a running Claude Code session** and optionally call **`a2a`** to message registered[...]
 
 ## Repository layout
 
@@ -43,19 +53,19 @@ a2a start bob
 a2a --bob 'hey, can you check if the tests pass?'
 ```
 
-When you launch peers with `--codex`, `a2a` now defaults Codex to `--dangerously-bypass-approvals-and-sandbox` unless you explicitly pass your own sandbox or approval flags such as `--full-auto`, `--sandbox ...`, or `--ask-for-approval ...`.
+When you launch peers with `--codex`, `a2a` now defaults Codex to `--dangerously-bypass-approvals-and-sandbox` unless you explicitly pass your own sandbox or approval flags such as `--full-auto`, [...]
 
 Full messaging syntax, `peek`, `attach`, `start-global`, and the HTTP API are documented in **`lib/README.md`**.
 
-`a2a start <name>` now resolves in three sensible layers: a single agent name, a legacy markdown group, or a YAML/JSON team spec. Team specs let each agent choose its own backend, model, approval mode, sandbox mode, `cwd`, env vars, and raw backend-specific args.
+`a2a start <name>` now resolves in three sensible layers: a single agent name, a legacy markdown group, or a YAML/JSON team spec. Team specs let each agent choose its own backend, model, approval [...]
 
-If the bridge restarts and forgets its in-memory registry while the tmux workers are still alive, run `a2a reconnect` to re-register live peers. Add `--all --dashboard` to rebuild a detached multi-window operator view session.
+If the bridge restarts and forgets its in-memory registry while the tmux workers are still alive, run `a2a reconnect` to re-register live peers. Add `--all --dashboard` to rebuild a detached multi[...]
 
-If you use iTerm2, `a2a` now automatically prefers tmux control-mode attach for interactive sessions it opens outside tmux, which gives the smoother split-pane experience with native terminal scrolling. You can still force that path manually with `a2a attach <name> --native-scroll`. This mirrors the `tmux -CC` approach Claude’s official agent-teams docs recommend for iTerm2.
+If you use iTerm2, `a2a` now automatically prefers tmux control-mode attach for interactive sessions it opens outside tmux, which gives the smoother split-pane experience with native terminal scro[...]
 
 ## MCP channel (`a2a-channel`)
 
-The channel is an [MCP](https://modelcontextprotocol.io) server: **Claude Code** spawns it over **stdio** and it listens on **localhost HTTP** for inbound POSTs. Events show up in the session as **`<channel source="a2a-channel" …>`**. The server’s **`instructions`** explain how that relates to the **a2a bridge** and the **`reply`** tool.
+The channel is an [MCP](https://modelcontextprotocol.io) server: **Claude Code** spawns it over **stdio** and it listens on **localhost HTTP** for inbound POSTs. Events show up in the session as *[...]
 
 ### Requirements (Claude Code)
 
@@ -73,7 +83,7 @@ The name after `server:` must match the key under `mcpServers` in `.mcp.json` (h
 
 ### Configure MCP
 
-Copy `.mcp.json.example` to **`.mcp.json`** at the project root (or merge into your user MCP config). Set **`args`** to an **absolute** path to `lib/a2a-channel.mjs` if the config file is not next to this repo.
+Copy `.mcp.json.example` to **`.mcp.json`** at the project root (or merge into your user MCP config). Set **`args`** to an **absolute** path to `lib/a2a-channel.mjs` if the config file is not next[...]
 
 ### Channel environment variables
 
@@ -100,11 +110,11 @@ curl -N "http://127.0.0.1:${A2A_CHANNEL_PORT:-8788}/events"
 
 ### `reply` tool
 
-Claude can call **`reply`** with **`peer`** (registered agent id), **`text`**, and optional **`action`** (`message` \| `reply` \| `ask`). That runs the local **`a2a`** CLI against the bridge. Start **`a2a bridge`** and register agents before relying on it.
+Claude can call **`reply`** with **`peer`** (registered agent id), **`text`**, and optional **`action`** (`message` | `reply` | `ask`). That runs the local **`a2a`** CLI against the bridge. Sta[...]
 
 ### Standalone `npm run channel`
 
-Running **`node lib/a2a-channel.mjs`** (or **`npm run channel`** from `lib/`) without Claude Code still starts **HTTP + SSE** for local testing, but **`notifications/claude/channel`** only reach a model when **Claude Code** spawns the same script via **`.mcp.json`**.
+Running **`node lib/a2a-channel.mjs`** (or **`npm run channel`** from `lib/`) without Claude Code still starts **HTTP + SSE** for local testing, but **`notifications/claude/channel`** only reach [...]
 
 ## License
 
