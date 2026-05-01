@@ -1,7 +1,7 @@
 {
-  "name": "a2a-bridge",
+  "name": "a2a",
   "version": "1.1.0",
-  "description": "Agent-to-Agent bridge for Claude Code — lets multiple Claude instances discover each other and exchange messages over tmux",
+  "description": "communications for agents",
   "type": "module",
   "bin": {
     "a2a": "./bin/a2a.mjs",

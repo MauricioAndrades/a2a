@@ -54,8 +54,7 @@ const CLAUDE_MD_PATH = path.join(CLAUDE_DIR, "CLAUDE.md");
 const WELCOME_DOC_PATH = path.join(CLAUDE_DIR, "a2a-welcome.md");
 
 const A2A_MARKER = "a2a-capable agent";
-const A2A_INSTRUCTION =
-  'You are an a2a-capable agent. The `a2a` CLI is available on PATH. When you receive a message wrapped in `<a2a_message>` tags, load the `a2a` skill immediately and follow its protocol. Reply to peer messages via `a2a --reply --<n> "..."`, never into your own pane. Run `a2a list` to discover peers. Run `a2a peek <n>` to check on a peer without interrupting them.';
+const A2A_INSTRUCTION = 'You are an a2a-capable agent. The `a2a` CLI is available on PATH. When you receive a message wrapped in `<a2a_message>` tags, load the `a2a` skill immediately and follow its protocol. Reply to peer messages via `a2a --reply --<n> "..."`, never into your own pane. Run `a2a list` to discover peers. Run `a2a peek <n>` to check on a peer without interrupting them.';
 
 const TOTAL_STEPS = 9;
 let STEP = 0;
