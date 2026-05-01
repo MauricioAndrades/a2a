@@ -1,13 +1,3 @@
-```text
-      _        ___        ___ 
-     / \      / _ \      / _ \
-    / _ \    | | | |    | | | |
-   / ___ \   | |_| |    | |_| |
-  /_/   \_\   \___/      \___/
-
-        AGENT  ⇄  AGENT   COMMS
-```
-
 # a2a
 
 Agent-to-agent bridge for [Claude Code](https://claude.ai/claude-code): multiple Claude instances in **tmux** register with a small **HTTP bridge**, discover each other, and send messages that arri[...]
