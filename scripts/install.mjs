@@ -6,7 +6,7 @@
  *
  * @param {string[]} argv
  * @example
- *   node ./lib/install.mjs
+ *   node ./scripts/install.mjs
  */
 
 import fs from "node:fs";
@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 
 const RED = "\x1b[0;31m";
@@ -23,7 +24,7 @@ const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
-const SCRIPT_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const SCRIPT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, ".claude");
 const SKILL_DIR = path.join(CLAUDE_DIR, "skills", "a2a");
@@ -343,8 +344,8 @@ async function installBinaries() {
     stepFail("install dir is /usr/local/bin but sudo is required. Re-run with sudo, or create ~/.local/bin and retry.");
   }
 
-  const a2aSrc = path.join(SCRIPT_DIR, "bin", "a2a");
-  const a2aServerSrc = path.join(SCRIPT_DIR, "lib", "a2a-server.mjs");
+  const a2aSrc = path.join(SCRIPT_DIR, "bin", "a2a.mjs");
+  const a2aServerSrc = path.join(SCRIPT_DIR, "src", "a2a-server.mjs");
 
   INSTALLED_A2A_PATH = path.join(INSTALL_BIN_DIR, "a2a");
   INSTALLED_A2A_SERVER_PATH = path.join(INSTALL_BIN_DIR, "a2a-server");
@@ -399,7 +400,7 @@ async function installBinaries() {
 }
 
 async function installSkill() {
-  const src = path.join(SCRIPT_DIR, "SKILL.md");
+  const src = path.join(SCRIPT_DIR, "skill", "SKILL.md");
   const dest = path.join(SKILL_DIR, "SKILL.md");
 
   explain("skill", [
@@ -419,7 +420,7 @@ async function installSkill() {
 }
 
 async function installWelcomeDoc() {
-  const src = path.join(SCRIPT_DIR, "lib", "a2a-welcome.md");
+  const src = path.join(SCRIPT_DIR, "src", "a2a-welcome.md");
 
   explain("welcome doc", [
     "This step installs the session welcome document used by the session start hook.",

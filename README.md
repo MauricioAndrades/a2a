@@ -8,12 +8,12 @@ This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks
 
 | Path | Role |
 |------|------|
-| `bin/a2a` | CLI entrypoint |
-| `lib/a2a-server.mjs` | Bridge HTTP server |
-| `lib/a2a-config.mjs` | `~/.claude/skills/a2a/` config, PID, groups, teams |
-| `lib/a2a-channel.mjs` | Claude Code MCP channel (stdio + local HTTP) |
-| `lib/README.md` | Full CLI reference, bridge API, env vars, groups |
-| `.mcp.json.example` | Sample MCP config for the channel |
+| `package.json` | npm manifest (`a2a-bridge`), dependencies, `bin` entries |
+| `bin/a2a.mjs` | CLI entrypoint (thin wrapper; implementation in `src/`) |
+| `src/a2a-server.mjs` | Bridge HTTP server |
+| `src/a2a-config.mjs` | `~/.claude/skills/a2a/` config, PID, groups, teams |
+| `src/a2a-channel.mjs` | Claude Code MCP channel (stdio + local HTTP) |
+| `docs/cli.md` | Full CLI reference, bridge API, env vars, groups |
 | `groups/` | Sample character groups bundled with the skill |
 | `teams/` | Sample YAML team specs bundled with the skill |
 
@@ -22,16 +22,13 @@ This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks
 From the repo root:
 
 ```bash
-node lib/install
+npm install
+npm run setup
 ```
 
-That symlinks `a2a`, installs the skill under `~/.claude/skills/a2a/`, sample groups, hooks, and `CLAUDE.md` snippets. See `lib/README.md` for everything the script does.
+(`npm run setup` runs `scripts/install.mjs`: symlinks `a2a`, installs the skill under `~/.claude/skills/a2a/`, sample groups, hooks, and `CLAUDE.md` snippets.) See `docs/cli.md` for everything the script does.
 
-**Channel dependencies** (if you use `a2a-channel`):
-
-```bash
-cd lib && npm install
-```
+**Dependencies:** install once at the repo root (`npm install`). The MCP channel uses packages declared in `package.json`.
 
 ## Quick start (bridge + agents)
 
@@ -45,7 +42,7 @@ a2a --bob 'hey, can you check if the tests pass?'
 
 When you launch peers with `--codex`, `a2a` now defaults Codex to `--dangerously-bypass-approvals-and-sandbox` unless you explicitly pass your own sandbox or approval flags such as `--full-auto`, `--sandbox ...`, or `--ask-for-approval ...`.
 
-Full messaging syntax, `peek`, `attach`, `start-global`, and the HTTP API are documented in **`lib/README.md`**.
+Full messaging syntax, `peek`, `attach`, `start-global`, and the HTTP API are documented in **`docs/cli.md`**.
 
 `a2a start <name>` now resolves in three sensible layers: a single agent name, a legacy markdown group, or a YAML/JSON team spec. Team specs let each agent choose its own backend, model, approval mode, sandbox mode, `cwd`, env vars, and raw backend-specific args.
 
@@ -73,7 +70,7 @@ The name after `server:` must match the key under `mcpServers` in `.mcp.json` (h
 
 ### Configure MCP
 
-Copy `.mcp.json.example` to **`.mcp.json`** at the project root (or merge into your user MCP config). Set **`args`** to an **absolute** path to `lib/a2a-channel.mjs` if the config file is not next to this repo.
+Create or merge **`.mcp.json`** at the project root (or into your user MCP config). Set **`args`** to an **absolute** path to `src/a2a-channel.mjs` if the config file is not next to this repo.
 
 ### Channel environment variables
 
@@ -104,7 +101,7 @@ Claude can call **`reply`** with **`peer`** (registered agent id), **`text`**, a
 
 ### Standalone `npm run channel`
 
-Running **`node lib/a2a-channel.mjs`** (or **`npm run channel`** from `lib/`) without Claude Code still starts **HTTP + SSE** for local testing, but **`notifications/claude/channel`** only reach a model when **Claude Code** spawns the same script via **`.mcp.json`**.
+Running **`node src/a2a-channel.mjs`** (or **`npm run channel`** from the repo root) without Claude Code still starts **HTTP + SSE** for local testing, but **`notifications/claude/channel`** only reach a model when **Claude Code** spawns the same script via **`.mcp.json`**.
 
 ## License
 

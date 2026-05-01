@@ -4,14 +4,15 @@
   "description": "Agent-to-Agent bridge for Claude Code — lets multiple Claude instances discover each other and exchange messages over tmux",
   "type": "module",
   "bin": {
-    "a2a": "../bin/a2a",
-    "a2a-server": "./a2a-server.mjs",
-    "a2a-channel": "./a2a-channel.mjs"
+    "a2a": "./bin/a2a.mjs",
+    "a2a-server": "./src/a2a-server.mjs",
+    "a2a-channel": "./src/a2a-channel.mjs"
   },
   "scripts": {
-    "start": "node a2a-server.mjs",
-    "channel": "node a2a-channel.mjs",
-    "install-hooks": "node install"
+    "start": "node src/a2a-server.mjs",
+    "channel": "node src/a2a-channel.mjs",
+    "install-hooks": "node scripts/install.mjs",
+    "setup": "node scripts/install.mjs"
   },
   "keywords": ["claude", "a2a", "agent", "bridge", "tmux"],
   "license": "MIT",
@@ -21,5 +22,15 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
     "zod": "^3.24.1"
-  }
+  },
+  "files": [
+    "bin",
+    "src",
+    "skill",
+    "groups",
+    "teams",
+    "schemas",
+    "scripts",
+    "docs"
+  ]
 }

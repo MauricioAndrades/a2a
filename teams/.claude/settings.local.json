@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(a2a list *)",
-      "Bash(a2a *)"
-    ]
-  }
-}

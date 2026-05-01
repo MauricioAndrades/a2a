@@ -2,7 +2,7 @@
   "mcpServers": {
     "a2a-channel": {
       "command": "node",
-      "args": ["./lib/a2a-channel.mjs"],
+      "args": ["./src/a2a-channel.mjs"],
       "env": {
         "A2A_CHANNEL_PORT": "8788",
         "A2A_CHANNEL_SENDERS": "dev"

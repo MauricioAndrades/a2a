@@ -7,17 +7,17 @@ import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { URL, fileURLToPath } from "url";
 import { spawnSync, spawn } from "child_process";
-import { isFlagSendArgv, parseFlagSendArgv } from "../lib/a2a-argv.mjs";
-import { isColonFlagArgv, parseColonFlagArgv, buildRegistry } from "../lib/a2a-tokens.mjs";
-import { loadTeamSpec, resolveTeamSpecPath } from "../lib/a2a-team-spec.mjs";
+import { isFlagSendArgv, parseFlagSendArgv } from "./a2a-argv.mjs";
+import { isColonFlagArgv, parseColonFlagArgv, buildRegistry } from "./a2a-tokens.mjs";
+import { loadTeamSpec, resolveTeamSpecPath } from "./a2a-team-spec.mjs";
 import {
     activeKey, bridgeUrl, readPid, writePid, removePid,
     isGroup, listGroupNames, listGroupMembers, loadConfig, loadRegistry, patchConfig,
     generateKey, configGet, configSet, messageLogPath,
     teamSpecsDir,
-} from "../lib/a2a-config.mjs";
+} from "./a2a-config.mjs";
 
-const SERVER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "a2a-server.mjs");
+const SERVER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "a2a-server.mjs");
 const REPO_TEAMS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "teams");
 
 const BACKENDS = { claude: "claude", gemini: "gemini", codex: "codex", "cursor-agent": "cursor-agent" };
