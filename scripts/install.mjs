@@ -6,7 +6,7 @@
  *
  * @param {string[]} argv
  * @example
- *   node ./scripts/install.mjs
+ *   node ./scripts/install.mjs --yes
  */
 
 import fs from "node:fs";
@@ -25,6 +25,24 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
 const SCRIPT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const INSTALL_ARGV = process.argv.slice(2);
+
+/**
+ * @returns {{ autoYes: boolean, showHelp: boolean }}
+ */
+function parseInstallArgv(argv) {
+  let autoYes = false;
+  let showHelp = false;
+  for (const arg of argv) {
+    if (arg === "--yes" || arg === "-y") autoYes = true;
+    if (arg === "--help" || arg === "-h") showHelp = true;
+  }
+  if (process.env.A2A_SETUP_YES === "1" || process.env.CI === "1") autoYes = true;
+  return { autoYes, showHelp };
+}
+
+const { autoYes: AUTO_YES, showHelp: SHOW_HELP } = parseInstallArgv(INSTALL_ARGV);
+
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, ".claude");
 const SKILL_DIR = path.join(CLAUDE_DIR, "skills", "a2a");
@@ -244,26 +262,24 @@ function canUsePasswordlessSudo() {
  * @returns {string}
  */
 function detectInstallBinDir() {
-  const candidates = [
-    "/usr/local/bin"
-    // path.join(HOME, ".local", "bin"),
-    // path.join(HOME, "bin"),
-  ];
+  const candidates = [path.join(HOME, ".local", "bin"), path.join(HOME, "bin"), "/usr/local/bin"];
 
   for (const dir of candidates) {
+    try {
+      ensureDir(dir);
+    } catch {
+      continue;
+    }
     if (isWritableDir(dir)) return dir;
   }
-
-  // for (const dir of [path.join(HOME, ".local", "bin"), path.join(HOME, "bin")]) {
-  //   ensureDir(dir);
-  //   if (isWritableDir(dir)) return dir;
-  // }
 
   if (fs.existsSync("/usr/local/bin") && canUsePasswordlessSudo()) {
     return "/usr/local/bin";
   }
 
-  throw new Error("could not find a writable install directory for binaries");
+  throw new Error(
+    "could not find a writable install directory for binaries; create ~/.local/bin and ensure it is writable",
+  );
 }
 
 /**
@@ -271,6 +287,7 @@ function detectInstallBinDir() {
  * @returns {Promise<boolean>}
  */
 async function confirm(question) {
+  if (AUTO_YES) return true;
   const answer = await rl.question(`${question} ${DIM}[y/N]${RESET} `);
   return /^(y|yes)$/i.test(answer.trim());
 }
@@ -280,6 +297,7 @@ async function confirm(question) {
  * @param {string[]} lines
  */
 function explain(title, lines) {
+  if (AUTO_YES) return;
   println(`\n${BOLD}${title}${RESET}`);
   for (const line of lines) {
     println(`  ${line}`);
@@ -708,6 +726,22 @@ function printSummary() {
   println(`  ${DIM}a2a help${RESET} for full reference\n`);
 }
 
+function printInstallHelp() {
+  println(`
+${BOLD}a2a bridge installer${RESET}
+
+usage:
+  node scripts/install.mjs [options]
+
+options:
+  -y, --yes     run all steps without prompts (same as A2A_SETUP_YES=1 or CI=1)
+  -h, --help    show this message
+
+npm:
+  npm run bootstrap    non-interactive setup (skill, hooks, PATH symlinks)
+`);
+}
+
 function verifyInstall() {
   if (!INSTALLED_A2A_PATH) {
     stepWarn("binary install was skipped");
@@ -749,10 +783,21 @@ async function runStep(label, fn) {
 }
 
 async function main() {
-  printHeader();
-  printPrereqs();
+  if (SHOW_HELP) {
+    printInstallHelp();
+    await rl.close();
+    return;
+  }
 
-  println("installing\n");
+  if (!AUTO_YES) {
+    printHeader();
+    printPrereqs();
+    println("installing\n");
+  } else {
+    println(`${BOLD}a2a bridge${RESET}  setup ${DIM}(--yes)${RESET}\n`);
+    printPrereqs();
+    println("");
+  }
 
   await runStep("binaries", installBinaries);
   await runStep("skill", installSkill);

@@ -4,6 +4,41 @@ Agent-to-agent bridge for [Claude Code](https://claude.ai/claude-code): multiple
 
 This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks, or scripts can **push text into a running Claude Code session** and optionally call **`a2a`** to message registered peers.
 
+## Install and use
+
+From a clone of this repo:
+
+```bash
+cd a2a
+npm install
+npm run bootstrap
+```
+
+`bootstrap` runs the installer **without prompts** (`scripts/install.mjs --yes`): puts `a2a` and `a2a-server` on your PATH (usually `~/.local/bin`), copies the skill into `~/.claude/skills/a2a/`, sample groups/teams, SessionStart hook, and updates `~/.claude/CLAUDE.md`. If that directory is not on your `PATH` yet, the installer prints a line to add to your shell profile.
+
+**Try the CLI immediately (no Claude files touched):**
+
+```bash
+npm install
+npx a2a help
+```
+
+**Global CLI via npm (alternative to bootstrap symlinks):**
+
+```bash
+npm install
+npm link
+a2a help
+```
+
+Use **`npm run bootstrap`** when you want the full Claude Code integration; use **`npx a2a`** or **`npm link`** when you only need the `a2a` command on this machine.
+
+Interactive installer (prompts before each step): **`npm run setup`** (same script without `--yes`).
+
+Details: **`docs/cli.md`**.
+
+Silent dependency installs (no post-install hint): **`A2A_SILENT_POSTINSTALL=1 npm install`**.
+
 ## Repository layout
 
 | Path | Role |
@@ -16,19 +51,6 @@ This repo also ships an optional **MCP channel** (`a2a-channel`) so CI, webhooks
 | `docs/cli.md` | Full CLI reference, bridge API, env vars, groups |
 | `groups/` | Sample character groups bundled with the skill |
 | `teams/` | Sample YAML team specs bundled with the skill |
-
-## Install (recommended)
-
-From the repo root:
-
-```bash
-npm install
-npm run setup
-```
-
-(`npm run setup` runs `scripts/install.mjs`: symlinks `a2a`, installs the skill under `~/.claude/skills/a2a/`, sample groups, hooks, and `CLAUDE.md` snippets.) See `docs/cli.md` for everything the script does.
-
-**Dependencies:** install once at the repo root (`npm install`). The MCP channel uses packages declared in `package.json`.
 
 ## Quick start (bridge + agents)
 

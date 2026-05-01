@@ -33,18 +33,22 @@ A lightweight service that lets multiple [Claude Code](https://claude.ai/claude-
 git clone <this-repo> ~/a2a
 cd ~/a2a
 npm install
-npm run setup
+npm run bootstrap
 ```
+
+(`npm run bootstrap` is non-interactive: `node scripts/install.mjs --yes`. For prompts at each step, use `npm run setup` instead.)
 
 The install script:
 
-1. Symlinks `a2a` to `/usr/local/bin/`
+1. Symlinks `a2a` into a writable bin directory (typically `~/.local/bin`, then `~/bin`, then `/usr/local/bin`)
 2. Installs the a2a skill to `~/.claude/skills/a2a/`
 3. Installs the welcome doc to `~/.claude/a2a-welcome.md`
 4. Ensures `~/.claude/skills/a2a/groups/` and copies the bundled `star-wars` sample group when that folder is not already present
 5. Ensures `~/.claude/skills/a2a/teams/` and copies the bundled `bug-killers.yaml` sample team spec when that file is not already present
 6. Sets up the SessionStart hook for automatic context injection
 7. Adds the a2a instruction to `~/.claude/CLAUDE.md`
+
+Environment: **`A2A_SETUP_YES=1`** or **`CI=1`** also enables non-interactive mode for `node scripts/install.mjs`.
 
 ## Quick start
 
