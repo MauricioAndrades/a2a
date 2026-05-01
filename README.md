@@ -18,6 +18,37 @@ Everything below assumes the **repository root** (next to **`package.json`**).
 
 Default bridge base URL is **`http://127.0.0.1:7742`** (`activeHost` / `activePort` in `src/a2a-config.mjs`: config file **`~/.claude/skills/a2a/config.json`**, overridden by **`A2A_HOST`** / **`A2A_PORT`**, or **`A2A_BRIDGE`** for the full URL).
 
+### Message round trip
+
+Local peers: the bridge delivers by writing into the recipient’s **tmux** pane; the reply path is the same in reverse. If the registry entry has **`bridgeUrl`** (remote agent), **`src/a2a-server.mjs`** forwards **`POST /api/a2a/send`** to that bridge instead of calling tmux locally.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AS as Alice session (tmux)
+    participant AC as a2a CLI
+    participant BR as Bridge HTTP
+    participant TM as tmux
+    participant BS as Bob session (tmux)
+
+    Note over AS,BS: Registration after a2a start (CLI registers name + pane target)
+    AS->>BR: POST /api/a2a/register
+    BS->>BR: POST /api/a2a/register
+
+    Note over AS,BS: Alice sends to Bob
+    AS->>AC: a2a --bob message text
+    AC->>BR: POST /api/a2a/send (to, from, origin, body)
+    BR->>BR: lookup bob, wrap body in a2a_message envelope
+    BR->>TM: load-buffer, paste-buffer, send-keys Enter
+    TM->>BS: envelope appears as terminal input
+
+    Note over AS,BS: Bob replies to Alice
+    BS->>AC: a2a --reply --alice text
+    AC->>BR: POST /api/a2a/send
+    BR->>TM: deliver to Alice pane
+    TM->>AS: envelope appears as terminal input
+```
+
 ---
 
 ## Prerequisites
@@ -73,14 +104,16 @@ a2a help
 Terminal 1 — bridge:
 
 ```bash
-a2a bridge
+a2a bridge start
+a2a start puff-daddy --prompt='you are puff, act like him'
+a2a start notorious-big --prompt='big p-o-p-p-a'
 ```
 
-Other terminals:
+Defaults to claude. Supports `gemini, codex, cursor-agent and claude`
 
 ```bash
-a2a start alice
-a2a start bob
+a2a start the-mad-rapper --codex
+a2a start mace --cursor-agent
 ```
 
 From **alice**’s session:
