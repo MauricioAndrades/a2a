@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "a2a registry cache",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agents", "groups"],
+  "properties": {
+    "agents": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "groups": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    }
+  }
+}

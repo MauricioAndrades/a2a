@@ -1,0 +1,1225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/codex-cli-reference.schema.json",
+  "title": "Codex CLI Reference",
+  "description": "Structured representation of the Codex CLI command reference, including global flags, command overview rows, command-specific option tables, safety guidance, and related resources.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "summary",
+    "howToRead",
+    "globalFlagOptions",
+    "commandOverview",
+    "commandDetails",
+    "flagCombinationsAndSafetyTips",
+    "relatedResources"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "const": "Command line options"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "howToRead": {
+      "$ref": "#/$defs/howToRead"
+    },
+    "globalFlagOptions": {
+      "$ref": "#/$defs/globalFlagOptions"
+    },
+    "commandOverview": {
+      "$ref": "#/$defs/commandOverview"
+    },
+    "commandDetails": {
+      "$ref": "#/$defs/commandDetails"
+    },
+    "flagCombinationsAndSafetyTips": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/safetyTip"
+      }
+    },
+    "relatedResources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      }
+    }
+  },
+  "$defs": {
+    "howToRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "configPrecedence",
+        "globalFlagPlacement",
+        "maturityReference"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configPrecedence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "configPath",
+            "commandLineOverrideSyntax",
+            "description",
+            "reference"
+          ],
+          "properties": {
+            "configPath": {
+              "type": "string",
+              "const": "~/.codex/config.toml"
+            },
+            "commandLineOverrideSyntax": {
+              "type": "string",
+              "const": "-c key=value"
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reference": {
+              "$ref": "#/$defs/link"
+            }
+          }
+        },
+        "globalFlagPlacement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maturityReference": {
+          "$ref": "#/$defs/link"
+        }
+      }
+    },
+    "commandDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codex",
+        "appServer",
+        "app",
+        "debugAppServerSendMessageV2",
+        "debugModels",
+        "apply",
+        "cloud",
+        "completion",
+        "features",
+        "exec",
+        "execpolicy",
+        "login",
+        "logout",
+        "mcp",
+        "pluginMarketplace",
+        "mcpServer",
+        "resume",
+        "fork",
+        "sandbox",
+        "update"
+      ],
+      "properties": {
+        "codex": {
+          "$ref": "#/$defs/commandDetailWithoutOptions"
+        },
+        "appServer": {
+          "$ref": "#/$defs/appServerCommandDetail"
+        },
+        "app": {
+          "$ref": "#/$defs/appCommandDetail"
+        },
+        "debugAppServerSendMessageV2": {
+          "$ref": "#/$defs/debugAppServerSendMessageV2CommandDetail"
+        },
+        "debugModels": {
+          "$ref": "#/$defs/debugModelsCommandDetail"
+        },
+        "apply": {
+          "$ref": "#/$defs/applyCommandDetail"
+        },
+        "cloud": {
+          "$ref": "#/$defs/cloudCommandDetail"
+        },
+        "completion": {
+          "$ref": "#/$defs/completionCommandDetail"
+        },
+        "features": {
+          "$ref": "#/$defs/featuresCommandDetail"
+        },
+        "exec": {
+          "$ref": "#/$defs/execCommandDetail"
+        },
+        "execpolicy": {
+          "$ref": "#/$defs/execpolicyCommandDetail"
+        },
+        "login": {
+          "$ref": "#/$defs/loginCommandDetail"
+        },
+        "logout": {
+          "$ref": "#/$defs/commandDetailWithoutOptions"
+        },
+        "mcp": {
+          "$ref": "#/$defs/mcpCommandDetail"
+        },
+        "pluginMarketplace": {
+          "$ref": "#/$defs/pluginMarketplaceCommandDetail"
+        },
+        "mcpServer": {
+          "$ref": "#/$defs/commandDetailWithoutOptions"
+        },
+        "resume": {
+          "$ref": "#/$defs/resumeCommandDetail"
+        },
+        "fork": {
+          "$ref": "#/$defs/forkCommandDetail"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/sandboxCommandDetail"
+        },
+        "update": {
+          "$ref": "#/$defs/commandDetailWithoutOptions"
+        }
+      }
+    },
+    "commandDetailWithoutOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/knownCommandKey"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "appServerCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/appServerOptions"
+            }
+          }
+        }
+      ]
+    },
+    "appCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/appOptions"
+            }
+          }
+        }
+      ]
+    },
+    "debugAppServerSendMessageV2CommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/debugAppServerSendMessageV2Options"
+            }
+          }
+        }
+      ]
+    },
+    "debugModelsCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/debugModelsOptions"
+            }
+          }
+        }
+      ]
+    },
+    "applyCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/applyOptions"
+            }
+          }
+        }
+      ]
+    },
+    "cloudCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "execOptions",
+            "listOptions"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "execOptions": {
+              "$ref": "#/$defs/cloudExecOptions"
+            },
+            "listOptions": {
+              "$ref": "#/$defs/cloudListOptions"
+            }
+          }
+        }
+      ]
+    },
+    "completionCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/completionOptions"
+            }
+          }
+        }
+      ]
+    },
+    "featuresCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/featuresOptions"
+            }
+          }
+        }
+      ]
+    },
+    "execCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options",
+            "resumeOptions"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/execOptions"
+            },
+            "resumeOptions": {
+              "$ref": "#/$defs/execResumeOptions"
+            }
+          }
+        }
+      ]
+    },
+    "execpolicyCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/execpolicyOptions"
+            }
+          }
+        }
+      ]
+    },
+    "loginCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/loginOptions"
+            }
+          }
+        }
+      ]
+    },
+    "mcpCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commands",
+            "addOptions"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "commands": {
+              "$ref": "#/$defs/mcpCommands"
+            },
+            "addOptions": {
+              "$ref": "#/$defs/mcpAddOptions"
+            }
+          }
+        }
+      ]
+    },
+    "pluginMarketplaceCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commands"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "commands": {
+              "$ref": "#/$defs/marketplaceCommands"
+            }
+          }
+        }
+      ]
+    },
+    "resumeCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/resumeOptions"
+            }
+          }
+        }
+      ]
+    },
+    "forkCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "options": {
+              "$ref": "#/$defs/forkOptions"
+            }
+          }
+        }
+      ]
+    },
+    "sandboxCommandDetail": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandDetailBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "macOptions",
+            "linuxOptions",
+            "windowsOptions"
+          ],
+          "properties": {
+            "key": true,
+            "description": true,
+            "notes": true,
+            "links": true,
+            "macOptions": {
+              "$ref": "#/$defs/sandboxMacOptions"
+            },
+            "linuxOptions": {
+              "$ref": "#/$defs/sandboxLinuxOptions"
+            },
+            "windowsOptions": {
+              "$ref": "#/$defs/sandboxWindowsOptions"
+            }
+          }
+        }
+      ]
+    },
+    "commandDetailBase": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "key",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/knownCommandKey"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "globalFlagOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 17
+    },
+    "execOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 19
+    },
+    "appServerOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 7
+    },
+    "appOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 2
+    },
+    "debugAppServerSendMessageV2Options": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 1
+    },
+    "debugModelsOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 1
+    },
+    "resumeOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "featuresOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "execResumeOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 5
+    },
+    "forkOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "execpolicyOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "loginOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "applyOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 1
+    },
+    "sandboxMacOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 7
+    },
+    "sandboxLinuxOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 5
+    },
+    "sandboxWindowsOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 5
+    },
+    "completionOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 1
+    },
+    "cloudExecOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 3
+    },
+    "cloudListOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 4
+    },
+    "mcpCommands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/subcommandOption"
+      },
+      "minItems": 6
+    },
+    "mcpAddOptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/option"
+      },
+      "minItems": 4
+    },
+    "marketplaceCommands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/subcommandOption"
+      },
+      "minItems": 3
+    },
+    "commandOverview": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/commandOverviewItem"
+      },
+      "minItems": 21
+    },
+    "commandOverviewItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "href",
+        "type",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/knownCommandKey"
+        },
+        "href": {
+          "$ref": "#/$defs/referenceHref"
+        },
+        "type": {
+          "$ref": "#/$defs/maturity"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownCommandAlias"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "type",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/knownOptionKey"
+        },
+        "type": {
+          "$ref": "#/$defs/knownOptionType"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultValue": {
+          "$ref": "#/$defs/defaultValue"
+        },
+        "repeatable": {
+          "type": "boolean"
+        },
+        "deprecated": {
+          "type": "boolean"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownOptionKey"
+          },
+          "uniqueItems": true
+        },
+        "conflictsWith": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownOptionKey"
+          },
+          "uniqueItems": true
+        },
+        "securityImpact": {
+          "$ref": "#/$defs/securityImpact"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "subcommandOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "description"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/knownSubcommandKey"
+        },
+        "type": {
+          "$ref": "#/$defs/knownOptionType"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultValue": {
+          "$ref": "#/$defs/defaultValue"
+        },
+        "repeatable": {
+          "type": "boolean"
+        },
+        "deprecated": {
+          "type": "boolean"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownOptionKey"
+          },
+          "uniqueItems": true
+        },
+        "conflictsWith": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownOptionKey"
+          },
+          "uniqueItems": true
+        },
+        "securityImpact": {
+          "$ref": "#/$defs/securityImpact"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "safetyTip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "danger"
+          ]
+        },
+        "appliesTo": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownOptionKey"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "danger",
+            "deprecated",
+            "experimental"
+          ]
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "href"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "href": {
+          "type": "string",
+          "format": "uri"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "defaultValue": {
+      "type": "string",
+      "minLength": 1
+    },
+    "maturity": {
+      "enum": [
+        "stable",
+        "experimental",
+        "beta"
+      ]
+    },
+    "securityImpact": {
+      "enum": [
+        "none",
+        "grants-additional-write-access",
+        "changes-working-directory",
+        "enables-live-web-search",
+        "bypasses-approvals",
+        "bypasses-sandbox",
+        "loads-local-config",
+        "ignores-local-config",
+        "loads-remote-server",
+        "sends-auth-token",
+        "starts-server",
+        "runs-sandboxed-command",
+        "reads-secret-from-env",
+        "reads-secret-from-file",
+        "writes-output-file"
+      ]
+    },
+    "referenceHref": {
+      "enum": [
+        "/codex/cli/reference#codex-interactive",
+        "/codex/cli/reference#codex-app-server",
+        "/codex/cli/reference#codex-app",
+        "/codex/cli/reference#codex-debug-app-server-send-message-v2",
+        "/codex/cli/reference#codex-debug-models",
+        "/codex/cli/reference#codex-apply",
+        "/codex/cli/reference#codex-cloud",
+        "/codex/cli/reference#codex-completion",
+        "/codex/cli/reference#codex-features",
+        "/codex/cli/reference#codex-exec",
+        "/codex/cli/reference#codex-execpolicy",
+        "/codex/cli/reference#codex-login",
+        "/codex/cli/reference#codex-logout",
+        "/codex/cli/reference#codex-mcp",
+        "/codex/cli/reference#codex-plugin-marketplace",
+        "/codex/cli/reference#codex-mcp-server",
+        "/codex/cli/reference#codex-resume",
+        "/codex/cli/reference#codex-fork",
+        "/codex/cli/reference#codex-sandbox",
+        "/codex/cli/reference#codex-update"
+      ]
+    },
+    "knownCommandKey": {
+      "enum": [
+        "codex",
+        "codex app-server",
+        "codex app",
+        "codex debug app-server send-message-v2",
+        "codex debug models",
+        "codex apply",
+        "codex cloud",
+        "codex completion",
+        "codex features",
+        "codex exec",
+        "codex execpolicy",
+        "codex login",
+        "codex logout",
+        "codex mcp",
+        "codex plugin marketplace",
+        "codex mcp-server",
+        "codex resume",
+        "codex fork",
+        "codex sandbox",
+        "codex update"
+      ]
+    },
+    "knownCommandAlias": {
+      "enum": [
+        "codex a",
+        "codex cloud-tasks",
+        "codex e"
+      ]
+    },
+    "knownSubcommandKey": {
+      "enum": [
+        "list",
+        "get <name>",
+        "add <name>",
+        "remove <name>",
+        "login <name>",
+        "logout <name>",
+        "add <source>",
+        "upgrade [marketplace-name]",
+        "remove <marketplace-name>"
+      ]
+    },
+    "knownOptionKey": {
+      "enum": [
+        "PROMPT",
+        "--image, -i",
+        "--model, -m",
+        "--oss",
+        "--profile, -p",
+        "--sandbox, -s",
+        "--ask-for-approval, -a",
+        "--dangerously-bypass-approvals-and-sandbox, --yolo",
+        "--cd, -C",
+        "--search",
+        "--add-dir",
+        "--no-alt-screen",
+        "--remote",
+        "--remote-auth-token-env",
+        "--enable",
+        "--disable",
+        "--config, -c",
+        "--full-auto",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--output-schema",
+        "--color",
+        "--json, --experimental-json",
+        "--output-last-message, -o",
+        "Resume subcommand",
+        "-c, --config",
+        "--listen",
+        "--ws-auth",
+        "--ws-token-file",
+        "--ws-shared-secret-file",
+        "--ws-issuer",
+        "--ws-audience",
+        "--ws-max-clock-skew-seconds",
+        "PATH",
+        "--download-url",
+        "USER_MESSAGE",
+        "--bundled",
+        "SESSION_ID",
+        "--last",
+        "--all",
+        "List subcommand",
+        "Enable subcommand",
+        "Disable subcommand",
+        "--rules, -r",
+        "--pretty",
+        "COMMAND...",
+        "--with-api-key",
+        "--device-auth",
+        "status subcommand",
+        "TASK_ID",
+        "--permissions-profile",
+        "--include-managed-config",
+        "--allow-unix-socket",
+        "--log-denials",
+        "SHELL",
+        "QUERY",
+        "--env",
+        "--attempts",
+        "--limit",
+        "--cursor",
+        "--json",
+        "--env KEY=VALUE",
+        "--url",
+        "--bearer-token-env-var"
+      ]
+    },
+    "knownOptionType": {
+      "enum": [
+        "string",
+        "path[,path...]",
+        "boolean",
+        "path",
+        "read-only | workspace-write | danger-full-access",
+        "untrusted | on-request | never",
+        "ws://host:port | wss://host:port",
+        "ENV_VAR",
+        "feature",
+        "key=value",
+        "string | - (read stdin)",
+        "always | never | auto",
+        "codex exec resume [SESSION_ID]",
+        "stdio:// | ws://IP:PORT",
+        "capability-token | signed-bearer-token",
+        "absolute path",
+        "number",
+        "url",
+        "uuid",
+        "path (repeatable)",
+        "var-args",
+        "NAME",
+        "DIR",
+        "bash | zsh | fish | power-shell | elvish",
+        "ENV_ID",
+        "1-4",
+        "1-20",
+        "--json",
+        "-- <command...> | --url <value>",
+        "--scopes scope1,scope2",
+        "stdio transport",
+        "repeatable",
+        "https://...",
+        "[--ref REF] [--sparse PATH]"
+      ]
+    }
+  }
+}

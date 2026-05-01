@@ -1,0 +1,813 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/gemini-cli-cheatsheet.schema.json",
+  "title": "Gemini CLI Cheatsheet",
+  "description": "Structured representation of the Gemini CLI cheatsheet, including common commands, positional arguments, interactive commands, CLI options, model aliases, extension commands, MCP commands, and skills commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "summary",
+    "cliCommands",
+    "positionalArguments",
+    "interactiveCommands",
+    "cliOptions",
+    "modelSelection",
+    "extensionsManagement",
+    "mcpServerManagement",
+    "skillsManagement"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "const": "Gemini CLI cheatsheet"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cliCommands": {
+      "type": "array",
+      "minItems": 11,
+      "items": {
+        "$ref": "#/$defs/cliCommand"
+      }
+    },
+    "positionalArguments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/positionalArgument"
+      }
+    },
+    "interactiveCommands": {
+      "type": "array",
+      "minItems": 9,
+      "items": {
+        "$ref": "#/$defs/interactiveCommand"
+      }
+    },
+    "cliOptions": {
+      "type": "array",
+      "minItems": 23,
+      "items": {
+        "$ref": "#/$defs/cliOption"
+      }
+    },
+    "modelSelection": {
+      "$ref": "#/$defs/modelSelection"
+    },
+    "extensionsManagement": {
+      "$ref": "#/$defs/extensionsManagement"
+    },
+    "mcpServerManagement": {
+      "$ref": "#/$defs/mcpServerManagement"
+    },
+    "skillsManagement": {
+      "$ref": "#/$defs/skillsManagement"
+    }
+  },
+  "$defs": {
+    "cliCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "description",
+        "example"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/knownCliCommand"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/executionMode"
+        },
+        "category": {
+          "$ref": "#/$defs/commandCategory"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argumentReference"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "positionalArgument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "description"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "query"
+          ]
+        },
+        "type": {
+          "enum": [
+            "string (variadic)"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultBehavior": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relatedOptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownCliOption"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "interactiveCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "description"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/knownInteractiveCommand"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "$ref": "#/$defs/interactiveCommandCategory"
+        },
+        "reloadsFromDisk": {
+          "type": "boolean"
+        },
+        "exitsSession": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cliOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "option",
+        "type",
+        "description"
+      ],
+      "properties": {
+        "option": {
+          "$ref": "#/$defs/knownCliOption"
+        },
+        "alias": {
+          "$ref": "#/$defs/knownCliOptionAlias"
+        },
+        "type": {
+          "$ref": "#/$defs/knownOptionType"
+        },
+        "defaultValue": {
+          "$ref": "#/$defs/defaultValue"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowedValues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownAllowedValue"
+          },
+          "uniqueItems": true
+        },
+        "deprecated": {
+          "type": "boolean"
+        },
+        "replacement": {
+          "$ref": "#/$defs/knownCliOption"
+        },
+        "experimental": {
+          "type": "boolean"
+        },
+        "requiresSettings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/settingsRequirement"
+          }
+        },
+        "valueFormat": {
+          "enum": [
+            "single",
+            "comma-separated",
+            "repeatable",
+            "comma-separated-or-repeatable"
+          ]
+        },
+        "forcesMode": {
+          "$ref": "#/$defs/executionMode"
+        },
+        "securityImpact": {
+          "$ref": "#/$defs/securityImpact"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      }
+    },
+    "modelSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "option",
+        "aliases"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "option": {
+          "const": "--model"
+        },
+        "aliases": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "$ref": "#/$defs/modelAlias"
+          }
+        }
+      }
+    },
+    "modelAlias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alias",
+        "resolvesTo",
+        "description"
+      ],
+      "properties": {
+        "alias": {
+          "$ref": "#/$defs/knownModelAlias"
+        },
+        "resolvesTo": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/knownModelName"
+          },
+          "uniqueItems": true
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "conditionalResolution": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "extensionsManagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "documentation"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "minItems": 12,
+          "items": {
+            "$ref": "#/$defs/extensionCommand"
+          }
+        },
+        "documentation": {
+          "$ref": "#/$defs/link"
+        }
+      }
+    },
+    "extensionCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "description",
+        "example"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/knownExtensionCommand"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/extensionAction"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argumentReference"
+          }
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extensionOption"
+          }
+        }
+      }
+    },
+    "mcpServerManagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "documentation"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "minItems": 7,
+          "items": {
+            "$ref": "#/$defs/mcpCommand"
+          }
+        },
+        "documentation": {
+          "$ref": "#/$defs/link"
+        }
+      }
+    },
+    "mcpCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "description",
+        "example"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/knownMcpCommand"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "$ref": "#/$defs/mcpTransport"
+        },
+        "scope": {
+          "$ref": "#/$defs/mcpScope"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argumentReference"
+          }
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mcpOption"
+          }
+        }
+      }
+    },
+    "skillsManagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "documentation"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "minItems": 8,
+          "items": {
+            "$ref": "#/$defs/skillCommand"
+          }
+        },
+        "documentation": {
+          "$ref": "#/$defs/link"
+        }
+      }
+    },
+    "skillCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "description",
+        "example"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/knownSkillCommand"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/skillAction"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argumentReference"
+          }
+        }
+      }
+    },
+    "argumentReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "required"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/knownArgumentName"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "variadic": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "settingsRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "value"
+      ],
+      "properties": {
+        "path": {
+          "enum": [
+            "experimental.worktrees"
+          ]
+        },
+        "value": {
+          "type": "boolean"
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "href"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "href": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "defaultValue": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
+    },
+    "executionMode": {
+      "enum": [
+        "interactive",
+        "non-interactive",
+        "interactive-after-prompt",
+        "piped-input",
+        "management",
+        "exit-after-output"
+      ]
+    },
+    "commandCategory": {
+      "enum": [
+        "session",
+        "query",
+        "resume",
+        "update",
+        "extensions",
+        "mcp"
+      ]
+    },
+    "interactiveCommandCategory": {
+      "enum": [
+        "skills",
+        "agents",
+        "custom-commands",
+        "memory",
+        "mcp",
+        "extensions",
+        "help",
+        "session"
+      ]
+    },
+    "securityImpact": {
+      "enum": [
+        "none",
+        "debug-logging",
+        "sandboxed-execution",
+        "skips-trust-check",
+        "auto-approves-actions",
+        "restricts-mcp-servers",
+        "restricts-tools",
+        "loads-extensions",
+        "adds-workspace-directories",
+        "accessibility-output"
+      ]
+    },
+    "extensionAction": {
+      "enum": [
+        "install",
+        "uninstall",
+        "list",
+        "update",
+        "enable",
+        "disable",
+        "link",
+        "new",
+        "validate"
+      ]
+    },
+    "skillAction": {
+      "enum": [
+        "list",
+        "install",
+        "link",
+        "uninstall",
+        "enable",
+        "disable",
+        "enable-all",
+        "disable-all"
+      ]
+    },
+    "mcpTransport": {
+      "enum": [
+        "stdio",
+        "http"
+      ]
+    },
+    "mcpScope": {
+      "enum": [
+        "user"
+      ]
+    },
+    "extensionOption": {
+      "enum": [
+        "--ref <ref>",
+        "--auto-update",
+        "--all"
+      ]
+    },
+    "mcpOption": {
+      "enum": [
+        "--transport http",
+        "--env KEY=value",
+        "--scope user",
+        "--include-tools tool1,tool2"
+      ]
+    },
+    "knownCliCommand": {
+      "enum": [
+        "gemini",
+        "gemini -p \"query\"",
+        "gemini \"query\"",
+        "cat file | gemini",
+        "gemini -i \"query\"",
+        "gemini -r \"latest\"",
+        "gemini -r \"latest\" \"query\"",
+        "gemini -r \"<session-id>\" \"query\"",
+        "gemini update",
+        "gemini extensions",
+        "gemini mcp"
+      ]
+    },
+    "knownInteractiveCommand": {
+      "enum": [
+        "/skills reload",
+        "/agents reload",
+        "/commands list",
+        "/commands reload",
+        "/memory reload",
+        "/mcp reload",
+        "/extensions reload",
+        "/help",
+        "/quit"
+      ]
+    },
+    "knownCliOption": {
+      "enum": [
+        "--debug",
+        "--version",
+        "--help",
+        "--model",
+        "--prompt",
+        "--prompt-interactive",
+        "--worktree",
+        "--sandbox",
+        "--skip-trust",
+        "--approval-mode",
+        "--yolo",
+        "--experimental-acp",
+        "--experimental-zed-integration",
+        "--allowed-mcp-server-names",
+        "--allowed-tools",
+        "--extensions",
+        "--list-extensions",
+        "--resume",
+        "--list-sessions",
+        "--delete-session",
+        "--include-directories",
+        "--screen-reader",
+        "--output-format"
+      ]
+    },
+    "knownCliOptionAlias": {
+      "enum": [
+        "-d",
+        "-v",
+        "-h",
+        "-m",
+        "-p",
+        "-i",
+        "-w",
+        "-s",
+        "-y",
+        "-e",
+        "-l",
+        "-r",
+        "-o"
+      ]
+    },
+    "knownOptionType": {
+      "enum": [
+        "-",
+        "array",
+        "boolean",
+        "string"
+      ]
+    },
+    "knownAllowedValue": {
+      "enum": [
+        "default",
+        "auto_edit",
+        "yolo",
+        "plan",
+        "text",
+        "json",
+        "stream-json",
+        "auto",
+        "pro",
+        "flash",
+        "flash-lite"
+      ]
+    },
+    "knownModelAlias": {
+      "enum": [
+        "auto",
+        "pro",
+        "flash",
+        "flash-lite"
+      ]
+    },
+    "knownModelName": {
+      "enum": [
+        "gemini-2.5-pro",
+        "gemini-3-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+      ]
+    },
+    "knownExtensionCommand": {
+      "enum": [
+        "gemini extensions install <source>",
+        "gemini extensions install <source> --ref <ref>",
+        "gemini extensions install <source> --auto-update",
+        "gemini extensions uninstall <name>",
+        "gemini extensions list",
+        "gemini extensions update <name>",
+        "gemini extensions update --all",
+        "gemini extensions enable <name>",
+        "gemini extensions disable <name>",
+        "gemini extensions link <path>",
+        "gemini extensions new <path>",
+        "gemini extensions validate <path>"
+      ]
+    },
+    "knownMcpCommand": {
+      "enum": [
+        "gemini mcp add <name> <command>",
+        "gemini mcp add <name> <url> --transport http",
+        "gemini mcp add <name> <command> --env KEY=value",
+        "gemini mcp add <name> <command> --scope user",
+        "gemini mcp add <name> <command> --include-tools tool1,tool2",
+        "gemini mcp remove <name>",
+        "gemini mcp list"
+      ]
+    },
+    "knownSkillCommand": {
+      "enum": [
+        "gemini skills list",
+        "gemini skills install <source>",
+        "gemini skills link <path>",
+        "gemini skills uninstall <name>",
+        "gemini skills enable <name>",
+        "gemini skills disable <name>",
+        "gemini skills enable --all",
+        "gemini skills disable --all"
+      ]
+    },
+    "knownArgumentName": {
+      "enum": [
+        "query",
+        "session-id",
+        "source",
+        "ref",
+        "name",
+        "path",
+        "command",
+        "url",
+        "KEY",
+        "value",
+        "tool1",
+        "tool2"
+      ]
+    }
+  }
+}

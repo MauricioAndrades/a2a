@@ -1,0 +1,707 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/claude-code-cli-reference.schema.json",
+  "title": "Claude Code CLI Reference",
+  "description": "Structured representation of the Claude Code command-line interface reference, including commands, flags, system prompt behavior, and related documentation links.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "documentationIndex",
+    "title",
+    "summary",
+    "commands",
+    "flags",
+    "systemPromptFlags",
+    "notes",
+    "seeAlso"
+  ],
+  "properties": {
+    "documentationIndex": {
+      "$ref": "#/$defs/documentationIndex"
+    },
+    "title": {
+      "type": "string",
+      "const": "CLI reference"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/command"
+      }
+    },
+    "flags": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/flag"
+      }
+    },
+    "systemPromptFlags": {
+      "$ref": "#/$defs/systemPromptFlags"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/note"
+      }
+    },
+    "seeAlso": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      }
+    }
+  },
+  "$defs": {
+    "documentationIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "instruction"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "const": "https://code.claude.com/docs/llms.txt"
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "syntax",
+        "description",
+        "example"
+      ],
+      "properties": {
+        "syntax": {
+          "$ref": "#/$defs/knownCommandSyntax"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "category": {
+          "$ref": "#/$defs/commandCategory"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argument"
+          }
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownFlagName"
+          },
+          "uniqueItems": true
+        },
+        "exitCodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exitCode"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        }
+      }
+    },
+    "flag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "description"
+      ],
+      "properties": {
+        "names": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/knownFlagName"
+          },
+          "uniqueItems": true
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "value": {
+          "$ref": "#/$defs/flagValue"
+        },
+        "category": {
+          "$ref": "#/$defs/flagCategory"
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sessionMode"
+          },
+          "uniqueItems": true
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownFlagName"
+          },
+          "uniqueItems": true
+        },
+        "conflictsWith": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knownFlagName"
+          },
+          "uniqueItems": true
+        },
+        "repeatable": {
+          "type": "boolean"
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        },
+        "stability": {
+          "$ref": "#/$defs/stability"
+        },
+        "securityImpact": {
+          "$ref": "#/$defs/securityImpact"
+        },
+        "environmentVariables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/environmentVariable"
+          },
+          "uniqueItems": true
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/note"
+          }
+        }
+      }
+    },
+    "systemPromptFlags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replacementFlags",
+        "appendFlags",
+        "mutualExclusions",
+        "combinationRules",
+        "recommendation"
+      ],
+      "properties": {
+        "replacementFlags": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "--system-prompt",
+              "--system-prompt-file"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "appendFlags": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "--append-system-prompt",
+              "--append-system-prompt-file"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "mutualExclusions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/flagRelationship"
+          }
+        },
+        "combinationRules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/flagRelationship"
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "flagRelationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flags",
+        "behavior"
+      ],
+      "properties": {
+        "flags": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/knownFlagName"
+          },
+          "uniqueItems": true
+        },
+        "behavior": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "argument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "required"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/argumentValue"
+        }
+      }
+    },
+    "argumentValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "path",
+            "version",
+            "session-id",
+            "session-name",
+            "pull-request-reference"
+          ]
+        },
+        "allowedValues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "flagValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "boolean",
+            "string",
+            "string-array",
+            "number",
+            "integer",
+            "amount-usd",
+            "json",
+            "json-schema",
+            "path",
+            "path-array",
+            "uuid",
+            "enum"
+          ]
+        },
+        "placeholder": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowedValues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "separator": {
+          "enum": [
+            "comma",
+            "space",
+            "repeat-flag"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "enum"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "allowedValues"
+            ]
+          }
+        }
+      ]
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "maxVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "removedInVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "requiresAuthentication": {
+          "enum": [
+            "anthropic-account",
+            "claude-subscription",
+            "api-key",
+            "claude-ai-authentication",
+            "none"
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "exitCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "meaning"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "meaning": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "href"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "href": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "danger",
+            "deprecated",
+            "removed"
+          ]
+        },
+        "appliesTo": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/knownFlagName"
+              },
+              {
+                "$ref": "#/$defs/knownCommandSyntax"
+              }
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "environmentVariable": {
+      "type": "string",
+      "enum": [
+        "CLAUDE_CODE_SIMPLE",
+        "CLAUDE_CODE_DEBUG_LOGS_DIR",
+        "CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"
+      ]
+    },
+    "commandCategory": {
+      "enum": [
+        "session",
+        "print",
+        "resume",
+        "authentication",
+        "configuration",
+        "agents",
+        "mcp",
+        "plugins",
+        "project",
+        "remote-control",
+        "setup",
+        "review",
+        "updates"
+      ]
+    },
+    "flagCategory": {
+      "enum": [
+        "access",
+        "agents",
+        "authentication",
+        "automation",
+        "browser",
+        "configuration",
+        "debugging",
+        "input-output",
+        "mcp",
+        "model",
+        "permissions",
+        "plugins",
+        "remote-control",
+        "resuming",
+        "session",
+        "system-prompt",
+        "worktree"
+      ]
+    },
+    "sessionMode": {
+      "enum": [
+        "interactive",
+        "print",
+        "non-interactive",
+        "server"
+      ]
+    },
+    "stability": {
+      "enum": [
+        "current",
+        "research-preview",
+        "deprecated",
+        "removed"
+      ]
+    },
+    "securityImpact": {
+      "enum": [
+        "none",
+        "grants-file-access",
+        "skips-permission-prompts",
+        "restricts-tools",
+        "loads-external-code",
+        "starts-server",
+        "creates-remote-session",
+        "prints-token"
+      ]
+    },
+    "knownCommandSyntax": {
+      "enum": [
+        "claude",
+        "claude \"query\"",
+        "claude -p \"query\"",
+        "cat file | claude -p \"query\"",
+        "claude -c",
+        "claude -c -p \"query\"",
+        "claude -r \"<session>\" \"query\"",
+        "claude update",
+        "claude install [version]",
+        "claude auth login",
+        "claude auth logout",
+        "claude auth status",
+        "claude agents",
+        "claude auto-mode defaults",
+        "claude mcp",
+        "claude plugin",
+        "claude project purge [path]",
+        "claude remote-control",
+        "claude setup-token",
+        "claude ultrareview [target]"
+      ]
+    },
+    "knownFlagName": {
+      "enum": [
+        "--add-dir",
+        "--agent",
+        "--agents",
+        "--allow-dangerously-skip-permissions",
+        "--allowedTools",
+        "--append-system-prompt",
+        "--append-system-prompt-file",
+        "--bare",
+        "--betas",
+        "--channels",
+        "--chrome",
+        "--continue",
+        "-c",
+        "--dangerously-load-development-channels",
+        "--dangerously-skip-permissions",
+        "--debug",
+        "--debug-file",
+        "--disable-slash-commands",
+        "--disallowedTools",
+        "--effort",
+        "--enable-auto-mode",
+        "--exclude-dynamic-system-prompt-sections",
+        "--fallback-model",
+        "--fork-session",
+        "--from-pr",
+        "--ide",
+        "--init",
+        "--init-only",
+        "--include-hook-events",
+        "--include-partial-messages",
+        "--input-format",
+        "--json-schema",
+        "--maintenance",
+        "--max-budget-usd",
+        "--max-turns",
+        "--mcp-config",
+        "--model",
+        "--name",
+        "-n",
+        "--no-chrome",
+        "--no-session-persistence",
+        "--output-format",
+        "--permission-mode",
+        "--permission-prompt-tool",
+        "--plugin-dir",
+        "--print",
+        "-p",
+        "--remote",
+        "--remote-control",
+        "--rc",
+        "--remote-control-session-name-prefix",
+        "--replay-user-messages",
+        "--resume",
+        "-r",
+        "--session-id",
+        "--setting-sources",
+        "--settings",
+        "--strict-mcp-config",
+        "--system-prompt",
+        "--system-prompt-file",
+        "--teleport",
+        "--teammate-mode",
+        "--tmux",
+        "--tools",
+        "--verbose",
+        "--version",
+        "-v",
+        "--worktree",
+        "-w"
+      ]
+    }
+  }
+}

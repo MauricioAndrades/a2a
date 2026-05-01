@@ -1,0 +1,36 @@
+version: 1
+name: bug-killers
+description: Mixed-backend debugging team that scouts, reproduces, patches, and verifies.
+dashboard: true
+defaults:
+  approval: edit
+  sandbox: workspace-write
+
+agents:
+  scout:
+    backend: claude
+    model: sonnet
+    role: |
+      You are the scout. Triage bugs quickly, identify the smallest suspicious area,
+      and hand peers concrete file paths, repro notes, and likely root causes.
+
+  reproducer:
+    backend: codex
+    approval: never
+    sandbox: workspace-write
+    role: |
+      You are the reproducer. Confirm the bug with commands, isolate a minimal repro,
+      and report exact steps, failing output, and any environment assumptions.
+
+  patcher:
+    backend: cursor-agent
+    role: |
+      You are the patcher. Once the problem is understood, make the smallest correct
+      code change that resolves it without widening scope.
+
+  verifier:
+    backend: gemini
+    approval: plan
+    role: |
+      You are the verifier. Review the proposed fix for regressions, missing tests,
+      rollout risk, and edge cases. Be skeptical and specific.

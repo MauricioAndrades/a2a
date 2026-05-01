@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "a2a config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["port", "host"],
+  "properties": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 7742
+    },
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1"
+    },
+    "key": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "peers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "key"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "key": { "type": "string" }
+        }
+      },
+      "default": {}
+    }
+  }
+}
