@@ -44,14 +44,16 @@ function parseInstallArgv(argv) {
 const { autoYes: AUTO_YES, showHelp: SHOW_HELP } = parseInstallArgv(INSTALL_ARGV);
 
 const HOME = os.homedir();
+const A2A_ROOT = SCRIPT_DIR;
+const A2A_SKILL_FILE = path.join(A2A_ROOT, "skill", "SKILL.md");
+const A2A_HOOK_DIR = path.join(A2A_ROOT, "hooks");
+const A2A_HOOK_FILE = "a2a-session-start.mjs";
+const GROUPS_DIR = path.join(A2A_ROOT, "groups");
+const TEAMS_DIR = path.join(A2A_ROOT, "teams");
 const CLAUDE_DIR = path.join(HOME, ".claude");
-const SKILL_DIR = path.join(CLAUDE_DIR, "skills", "a2a");
-const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks");
-const GROUPS_DIR = path.join(CLAUDE_DIR, "skills", "a2a", "groups");
-const TEAMS_DIR = path.join(CLAUDE_DIR, "skills", "a2a", "teams");
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
-const CLAUDE_MD_PATH = path.join(CLAUDE_DIR, "CLAUDE.md");
-const WELCOME_DOC_PATH = path.join(CLAUDE_DIR, "a2a-welcome.md");
+const CLAUDE_MD_PATH = path.join(A2A_ROOT, "CLAUDE.md");
+const WELCOME_DOC_PATH = path.join(A2A_ROOT, "src", "a2a-welcome.md");
 
 const A2A_MARKER = "a2a-capable agent";
 const A2A_INSTRUCTION = 'You are an a2a-capable agent. The `a2a` CLI is available on PATH. When you receive a message wrapped in `<a2a_message>` tags, load the `a2a` skill immediately and follow its protocol. Reply to peer messages via `a2a --reply --<n> "..."`, never into your own pane. Run `a2a list` to discover peers. Run `a2a peek <n>` to check on a peer without interrupting them.';
@@ -153,6 +155,9 @@ function commandExists(bin) {
 function shellQuote(input) {
   return `'${input.replace(/'/g, `'\\''`)}'`;
 }
+
+const A2A_HOOK_ABS = path.join(A2A_HOOK_DIR, A2A_HOOK_FILE);
+const A2A_HOOK_COMMAND = `node ${shellQuote(A2A_HOOK_ABS)}`;
 
 /**
  * @param {string} dir
@@ -417,42 +422,37 @@ async function installBinaries() {
 }
 
 async function installSkill() {
-  const src = path.join(SCRIPT_DIR, "skill", "SKILL.md");
-  const dest = path.join(SKILL_DIR, "SKILL.md");
-
   explain("skill", [
-    "This step installs the a2a skill markdown into Claude's skill directory.",
-    `Source: ${src}`,
-    `Destination: ${dest}`,
-    "If the destination exists and differs, it will be backed up to .bak before update.",
+    "The a2a skill stays in this package; nothing is copied under ~/.claude/skills.",
+    `Path: ${A2A_SKILL_FILE}`,
   ]);
 
-  if (!(await confirm("Proceed with skill install?"))) {
-    return { kind: "skip", reason: "user skipped skill install" };
+  if (!(await confirm("Proceed with skill check?"))) {
+    return { kind: "skip", reason: "user skipped skill step" };
   }
 
-  ensureDir(SKILL_DIR);
-  const result = copyFileWithBackup(src, dest);
-  return result.status === "skip" ? { kind: "skip", reason: result.message } : { kind: "ok" };
+  if (!fs.existsSync(A2A_SKILL_FILE)) {
+    return { kind: "skip", reason: "skill/SKILL.md not found in package" };
+  }
+
+  return { kind: "ok" };
 }
 
 async function installWelcomeDoc() {
-  const src = path.join(SCRIPT_DIR, "src", "a2a-welcome.md");
-
   explain("welcome doc", [
-    "This step installs the session welcome document used by the session start hook.",
-    `Source: ${src}`,
-    `Destination: ${WELCOME_DOC_PATH}`,
-    "If the destination exists and differs, it will be backed up to .bak before update.",
+    "The session welcome document stays in this package; nothing is copied to ~/.claude.",
+    `Path: ${WELCOME_DOC_PATH}`,
   ]);
 
-  if (!(await confirm("Proceed with welcome doc install?"))) {
-    return { kind: "skip", reason: "user skipped welcome doc install" };
+  if (!(await confirm("Proceed with welcome doc check?"))) {
+    return { kind: "skip", reason: "user skipped welcome doc step" };
   }
 
-  ensureDir(CLAUDE_DIR);
-  const result = copyFileWithBackup(src, WELCOME_DOC_PATH);
-  return result.status === "skip" ? { kind: "skip", reason: result.message } : { kind: "ok" };
+  if (!fs.existsSync(WELCOME_DOC_PATH)) {
+    return { kind: "skip", reason: "src/a2a-welcome.md not found in package" };
+  }
+
+  return { kind: "ok" };
 }
 
 async function installGroups() {
@@ -514,45 +514,42 @@ async function installTeams() {
 }
 
 async function installHook() {
-  const hookPath = path.join(HOOKS_DIR, "a2a-session-start.sh");
-  const hookContents = `#!/usr/bin/env bash
-set -euo pipefail
+  const hookPath = A2A_HOOK_ABS;
+  const pkgWelcomeLiteral = JSON.stringify(WELCOME_DOC_PATH);
+  const hookContents = `#!/usr/bin/env node
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
-[ "\${A2A_SESSION:-0}" = "1" ] || exit 0
+const home = process.env.HOME || "";
 
-WELCOME_FILE="\${HOME}/.claude/a2a-welcome.md"
+if (process.env.A2A_SESSION !== "1") process.exit(0);
 
-command -v node >/dev/null 2>&1 || exit 0
-
-A2A_WELCOME_FILE="$WELCOME_FILE" node <<'NODE'
-const fs = require('fs');
-const path = require('path');
-
-const home = process.env.HOME || '';
-const welcomeCandidates = [
+const candidates = [
   process.env.A2A_WELCOME_FILE,
-  path.join(home, '.claude', 'a2a-welcome.md'),
-  path.join(home, '.claude', 'skills', 'a2a', 'a2a-welcome.md')
+  ${pkgWelcomeLiteral},
+  join(home, ".claude", "a2a-welcome.md"),
+  join(home, ".claude", "skills", "a2a", "a2a-welcome.md"),
 ].filter(Boolean);
 
-let ctx = '';
-for (const welcomePath of welcomeCandidates) {
+let ctx = "";
+for (const p of candidates) {
   try {
-    if (!fs.existsSync(welcomePath)) continue;
-    ctx = fs.readFileSync(welcomePath, 'utf8');
+    if (!existsSync(p)) continue;
+    ctx = readFileSync(p, "utf8");
     break;
   } catch {
-    // Keep going: hook output should not fail session startup.
+    // Hook output should not fail session startup.
   }
 }
 
-process.stdout.write(JSON.stringify({
-  hookSpecificOutput: {
-    hookEventName: 'SessionStart',
-    additionalContext: ctx
-  }
-}));
-NODE
+process.stdout.write(
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: ctx,
+    },
+  }),
+);
 `;
 
   explain("session hook", [
@@ -565,7 +562,7 @@ NODE
     return { kind: "skip", reason: "user skipped hook install" };
   }
 
-  ensureDir(HOOKS_DIR);
+  ensureDir(A2A_HOOK_DIR);
 
   if (!fs.existsSync(hookPath)) {
     writeFileAtomic(hookPath, hookContents);
@@ -584,13 +581,124 @@ NODE
   return { kind: "ok" };
 }
 
+/**
+ * @param {unknown} cmd
+ */
+function isA2aSessionStartHookCommand(cmd) {
+  return typeof cmd === "string" && cmd.includes("a2a-session-start");
+}
+
+/**
+ * @param {unknown[]} sessionStart
+ * @param {string} hookCommand
+ */
+function hasNestedA2aSessionHook(sessionStart, hookCommand) {
+  if (!Array.isArray(sessionStart)) return false;
+  for (const entry of sessionStart) {
+    if (!entry || typeof entry !== "object") continue;
+    const inner = /** @type {{ hooks?: unknown }} */ (entry).hooks;
+    if (!Array.isArray(inner)) continue;
+    for (const h of inner) {
+      if (!h || typeof h !== "object") continue;
+      const cmd = /** @type {{ type?: unknown; command?: unknown }} */ (h);
+      if (cmd.type === "command" && cmd.command === hookCommand) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @param {unknown} cmd
+ */
+function isLegacyClaudeA2aHookCommand(cmd) {
+  return typeof cmd === "string" && cmd.includes("a2a-session-start") && cmd.includes(".claude");
+}
+
+function hasLegacyA2aSessionHook(sessionStart) {
+  if (!Array.isArray(sessionStart)) return false;
+  for (const entry of sessionStart) {
+    if (!entry || typeof entry !== "object") continue;
+    const o = /** @type {{ type?: unknown; command?: unknown; hooks?: unknown[] }} */ (entry);
+    if (o.type === "command" && isLegacyClaudeA2aHookCommand(o.command)) return true;
+    if (Array.isArray(o.hooks)) {
+      for (const h of o.hooks) {
+        if (!h || typeof h !== "object") continue;
+        const cmd = /** @type {{ type?: unknown; command?: unknown }} */ (h);
+        if (cmd.type === "command" && isLegacyClaudeA2aHookCommand(cmd.command)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * @param {unknown[]} sessionStart
+ * @returns {unknown[]}
+ */
+function removeLegacyA2aHookEntries(sessionStart) {
+  if (!Array.isArray(sessionStart)) return [];
+  const out = [];
+  for (const entry of sessionStart) {
+    if (!entry || typeof entry !== "object") {
+      out.push(entry);
+      continue;
+    }
+    const o = /** @type {{ type?: unknown; command?: unknown; hooks?: unknown[] }} */ (entry);
+    if (o.type === "command" && isLegacyClaudeA2aHookCommand(o.command)) continue;
+    if (Array.isArray(o.hooks)) {
+      const keptHooks = o.hooks.filter((h) => {
+        if (!h || typeof h !== "object") return true;
+        const cmd = /** @type {{ type?: unknown; command?: unknown }} */ (h);
+        return !(cmd.type === "command" && isLegacyClaudeA2aHookCommand(cmd.command));
+      });
+      if (keptHooks.length > 0) {
+        out.push({ ...o, hooks: keptHooks });
+      }
+      continue;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * @param {unknown[]} sessionStart
+ * @returns {unknown[]}
+ */
+function stripA2aSessionHookCommands(sessionStart) {
+  if (!Array.isArray(sessionStart)) return [];
+  const out = [];
+  for (const entry of sessionStart) {
+    if (!entry || typeof entry !== "object") {
+      out.push(entry);
+      continue;
+    }
+    const o = /** @type {{ type?: unknown; command?: unknown; hooks?: unknown[] }} */ (entry);
+    if (o.type === "command" && isA2aSessionStartHookCommand(o.command)) continue;
+    if (Array.isArray(o.hooks)) {
+      const keptHooks = o.hooks.filter((h) => {
+        if (!h || typeof h !== "object") return true;
+        const cmd = /** @type {{ type?: unknown; command?: unknown }} */ (h);
+        return !(cmd.type === "command" && isA2aSessionStartHookCommand(cmd.command));
+      });
+      if (keptHooks.length > 0) {
+        out.push({ ...o, hooks: keptHooks });
+      }
+      continue;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 async function updateSettingsJson() {
-  const hookCommand = "bash ~/.claude/hooks/a2a-session-start.sh";
+  const hookCommand = A2A_HOOK_COMMAND;
 
   explain("settings.json", [
     "This step updates Claude settings to register the a2a SessionStart hook.",
     `File: ${SETTINGS_PATH}`,
-    "It only adds the hook entry if missing.",
+    "It merges a nested SessionStart block and skips if the canonical a2a hook is already registered.",
+    "Legacy ~/.claude/... a2a hook entries are removed when the package hook is already registered.",
     "If the file exists, it will be backed up to settings.json.bak before writing changes.",
   ]);
 
@@ -622,26 +730,32 @@ async function updateSettingsJson() {
     data.hooks = {};
   }
 
-  if (!Array.isArray(data.hooks.SessionStart)) {
-    data.hooks.SessionStart = [];
+  let sessionStart = data.hooks.SessionStart;
+  if (sessionStart == null) {
+    sessionStart = [];
+  } else if (!Array.isArray(sessionStart)) {
+    throw new Error("settings.json hooks.SessionStart must be an array when present");
   }
 
-  const exists = data.hooks.SessionStart.some(
-    (entry) =>
-      entry &&
-      typeof entry === "object" &&
-      entry.type === "command" &&
-      entry.command === hookCommand,
-  );
-
-  if (exists) {
-    return { kind: "skip", reason: "hook entry already present in settings.json" };
+  /** @type {unknown[]} */
+  let updated;
+  if (hasNestedA2aSessionHook(sessionStart, hookCommand)) {
+    if (!hasLegacyA2aSessionHook(sessionStart)) {
+      return { kind: "skip", reason: "a2a SessionStart hook already registered" };
+    }
+    updated = removeLegacyA2aHookEntries(sessionStart);
+  } else {
+    updated = stripA2aSessionHookCommands(sessionStart);
+    updated.push({
+      hooks: [{ type: "command", command: hookCommand }],
+    });
   }
 
-  data.hooks.SessionStart.push({
-    type: "command",
-    command: hookCommand,
-  });
+  if (JSON.stringify(updated) === JSON.stringify(sessionStart)) {
+    return { kind: "skip", reason: "settings.json already up to date" };
+  }
+
+  data.hooks.SessionStart = updated;
 
   if (fs.existsSync(SETTINGS_PATH)) {
     backupFile(SETTINGS_PATH);
@@ -653,7 +767,7 @@ async function updateSettingsJson() {
 
 async function updateClaudeMd() {
   explain("CLAUDE.md", [
-    "This step appends the a2a instruction block to ~/.claude/CLAUDE.md if it is not already present.",
+    "This step appends the a2a instruction block to CLAUDE.md at the package root if it is not already present.",
     `File: ${CLAUDE_MD_PATH}`,
     "It does not remove or rewrite existing content.",
   ]);
@@ -662,7 +776,7 @@ async function updateClaudeMd() {
     return { kind: "skip", reason: "user skipped CLAUDE.md update" };
   }
 
-  ensureDir(CLAUDE_DIR);
+  ensureDir(A2A_ROOT);
 
   if (fs.existsSync(CLAUDE_MD_PATH)) {
     const current = fs.readFileSync(CLAUDE_MD_PATH, "utf8");
@@ -704,8 +818,8 @@ function printSummary() {
 
   println("\nlocations\n");
   println(`  ${DIM}bin dir${RESET}        ${INSTALL_BIN_DIR || "(not set)"}`);
-  println(`  ${DIM}skill${RESET}          ${path.join(SKILL_DIR, "SKILL.md")}`);
-  println(`  ${DIM}hook${RESET}           ${path.join(HOOKS_DIR, "a2a-session-start.sh")}`);
+  println(`  ${DIM}skill${RESET}          ${A2A_SKILL_FILE}`);
+  println(`  ${DIM}hook${RESET}           ${A2A_HOOK_ABS}`);
   println(`  ${DIM}settings${RESET}       ${SETTINGS_PATH}`);
   println(`  ${DIM}welcome${RESET}        ${WELCOME_DOC_PATH}`);
   println("");
