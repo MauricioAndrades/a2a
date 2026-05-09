@@ -1,6 +1,6 @@
 # AGENTS.md — working in this repository
 
-Load this file when you open this project. It tells you what **a2a** is and exactly how to **set up a fresh clone** so you or your user can run the CLI and (when relevant) integrate with Claude Code.
+Load this file when you open this project. It tells you what **a2a** is and exactly how to **set up a fresh clone** so you or your user can run the CLI.
 
 ## What this project is
 
@@ -22,13 +22,13 @@ Use **`A2A_SILENT_POSTINSTALL=1 npm install`** if you must suppress the short po
 
 ### 2. Choose one path
 
-**Path A — Full Claude Code integration (skill, hooks, symlinks into a user-writable bin dir, usually `~/.local/bin`):**
+**Path A — Standard local install (skill files, welcome doc, samples, symlinks into a user-writable bin dir, usually `~/.local/bin`):**
 
 ```bash
 npm run bootstrap
 ```
 
-This is **`scripts/install.mjs --yes`** (non-interactive). It writes under **`~/.claude/`** (skill, hooks, welcome doc, settings hooks, `CLAUDE.md` snippet). Do **not** run this if the user explicitly forbids touching `~/.claude`.
+This is **`scripts/install.mjs --yes`** (non-interactive). It writes the a2a skill, welcome doc, bundled groups, and bundled team specs under **`~/.claude/skills/a2a/`** and **`~/.claude/a2a-welcome.md`**. It does **not** edit **`~/.claude/settings.json`**, append to **`~/.claude/CLAUDE.md`**, or register Claude Code hooks. Do **not** run this if the user explicitly forbids touching `~/.claude`.
 
 If `bootstrap` warns that the install bin dir is not on `PATH`, apply the **`export PATH=...`** line it prints (often `~/.local/bin`) and re-run your shell or open a new terminal.
 
@@ -87,13 +87,13 @@ The bootstrap script prints a prerequisite summary; treat missing **tmux** as a 
 
 - Do not tell the user to “run setup yourself” if your environment allows you to run the commands above; **execute** them unless blocked (no network, sandbox forbids `~/.claude`, or explicit user refusal).
 - Do not invent paths: CLI entry is **`bin/a2a.mjs`** (wired via **`package.json`** `bin`), implementation under **`src/`**, installer **`scripts/install.mjs`**.
-- Avoid editing **`~/.claude/`** unless the user asked for Claude integration or you ran **`npm run bootstrap`** with their consent.
+- Avoid editing **`~/.claude/`** unless the user asked for the standard install or you ran **`npm run bootstrap`** with their consent.
 
 ## Quick reference
 
 | Goal | Command |
 |------|---------|
 | Dependencies | `npm install` |
-| Claude skill + hooks + PATH symlinks | `npm run bootstrap` |
+| Skill files + samples + PATH symlinks | `npm run bootstrap` |
 | CLI only (no home-dir integration) | `npx a2a help` or `npm link` then `a2a help` |
 | Long-form docs | `docs/cli.md` |

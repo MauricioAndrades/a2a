@@ -11,10 +11,10 @@
   "scripts": {
     "start": "node src/a2a-server.mjs",
     "channel": "node src/a2a-channel.mjs",
-    "install-hooks": "node scripts/install.mjs",
     "setup": "node scripts/install.mjs",
     "bootstrap": "node scripts/install.mjs --yes",
-    "postinstall": "node scripts/postinstall-hint.mjs"
+    "postinstall": "node scripts/postinstall-hint.mjs",
+    "test": "node tests/run.mjs"
   },
   "keywords": ["claude", "a2a", "agent", "bridge", "tmux"],
   "license": "MIT",
@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
+    "js-yaml": "^4.1.0",
     "zod": "^3.24.1"
   },
   "files": [

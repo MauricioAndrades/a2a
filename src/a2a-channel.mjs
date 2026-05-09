@@ -6,9 +6,9 @@
  * optional reply via a2a CLI, sender gate, SSE mirror, permission relay.
  *
  * Standalone (e.g. npm run channel): MCP stdio idles with no peer, but the HTTP
- * listener and SSE mirror still run. Inbound POSTs are accepted (403 without a
- * listed X-Sender, default allowlist is "dev"); those notifications do not reach
- * a Claude session until Claude Code spawns this process over stdio.
+ * listener and SSE mirror still run. Inbound POSTs require a listed X-Sender;
+ * those notifications do not reach a Claude session until Claude Code spawns
+ * this process over stdio.
  *
  * Project-root .mcp.json is read at Claude Code session start; the next session
  * wires stdio here so channel notifications reach the agent (requires claude.ai
@@ -17,8 +17,9 @@
  * Env:
  *   A2A_CHANNEL_PORT   (default 8788)
  *   A2A_CHANNEL_HOST   (default 127.0.0.1)
- *   A2A_CHANNEL_SENDERS  comma-separated X-Sender allowlist (default "dev")
- *   A2A_CHANNEL_BIN    a2a executable (default "a2a" on PATH)
+ *   A2A_CHANNEL_SENDERS  comma-separated X-Sender allowlist (default empty)
+ *   A2A_CHANNEL_KEY      required bearer token when host is non-loopback
+ *   A2A_CHANNEL_BIN      a2a executable (default "a2a" on PATH)
  */
 
 import { createServer } from "http";
@@ -27,17 +28,20 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { bearerToken, channelStartupProblem, isLoopbackHost, parseAllowedSenders } from "./channel/auth.mjs";
 
 const PORT = Number.parseInt(process.env.A2A_CHANNEL_PORT || "8788", 10) || 8788;
 const HOST = process.env.A2A_CHANNEL_HOST || "127.0.0.1";
 const A2A_BIN = process.env.A2A_CHANNEL_BIN || "a2a";
+const CHANNEL_KEY = process.env.A2A_CHANNEL_KEY || "";
 
-const allowed = new Set(
-    (process.env.A2A_CHANNEL_SENDERS || "dev")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-);
+const allowed = parseAllowedSenders(process.env.A2A_CHANNEL_SENDERS || "");
+const remoteAuthRequired = !isLoopbackHost(HOST);
+const startupProblem = channelStartupProblem({ host: HOST, allowed, key: CHANNEL_KEY });
+if (startupProblem) {
+    console.error(startupProblem);
+    process.exit(1);
+}
 
 /** @type {Set<(chunk: string) => void>} */
 const listeners = new Set();
@@ -80,7 +84,7 @@ const mcp = new Server(
             "Sending between agents: POST /api/a2a/send JSON { to, from, origin, body, action } with origin user|peer|self. Local delivery: wrap body in <a2a_message from to origin action ts>…</a2a_message> and tmux paste-buffer into tmuxTarget then Enter. If recipient has bridgeUrl, the bridge forwards the same payload to that URL's /api/a2a/send instead.",
             "CLI `a2a` talks to the bridge (A2A_BRIDGE, optional bearer A2A_KEY). Peers reply with a2a --reply --<peer> so the other tmux session sees the message; typing only in your own pane does not reach them.",
             "This channel's reply tool runs that CLI: peer (registered agent id), text, optional action message|reply|ask. Use it to reach agents on the bridge. For in-session only, respond in the terminal without the tool.",
-            "HTTP sidecars: GET /events is SSE for outbound mirror (replies, permission text). Permission relay: operator POST yes <5-letter-id> or no <id> with X-Sender in the configured allowlist (default dev).",
+            "HTTP sidecars: GET /events is SSE for outbound mirror (replies, permission text). Permission relay: operator POST yes <5-letter-id> or no <id> with X-Sender in the configured allowlist. Non-loopback channel binds require Authorization: Bearer <A2A_CHANNEL_KEY>.",
         ].join(" "),
     },
 );
@@ -188,6 +192,11 @@ const httpServer = createServer(async (req, res) => {
             res.end("forbidden");
             return;
         }
+        if (remoteAuthRequired && bearerToken(req) !== CHANNEL_KEY) {
+            res.writeHead(401, { "Content-Type": "text/plain" });
+            res.end("unauthorized");
+            return;
+        }
 
         const m = PERMISSION_REPLY_RE.exec(body);
         if (m) {
@@ -231,7 +240,9 @@ const httpServer = createServer(async (req, res) => {
 httpServer.requestTimeout = 0;
 httpServer.headersTimeout = 0;
 httpServer.listen(PORT, HOST, () => {
-    sseSend(`a2a-channel listening on http://${HOST}:${PORT} (X-Sender allowlist: ${[...allowed].join(", ")})`);
+    const senders = allowed.size ? [...allowed].join(", ") : "(none)";
+    const auth = remoteAuthRequired ? "bearer auth required" : "loopback";
+    sseSend(`a2a-channel listening on http://${HOST}:${PORT} (X-Sender allowlist: ${senders}; ${auth})`);
 });
 
 /**

@@ -9,7 +9,7 @@ process.stdout.write(`
   a2a-bridge installed dependencies.
 
   Next (pick one):
-    npm run bootstrap     Claude skill + hooks + symlinks (non-interactive)
+    npm run bootstrap     skill files + samples + symlinks (non-interactive)
     npm link              put a2a on PATH only (no ~/.claude changes)
 
   Docs: docs/cli.md

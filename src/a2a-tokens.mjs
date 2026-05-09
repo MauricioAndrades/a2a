@@ -52,6 +52,7 @@ export function isColonFlagArgv(argv) {
 
 export function parseColonFlagArgv(argv, registry) {
     let action = null;
+    let inlineContent = null;
     const recipients = [];
     const extras = {};
     const positional = [];
@@ -67,6 +68,10 @@ export function parseColonFlagArgv(argv, registry) {
             const result = parseColonFlag("--" + flagPart, registry);
             if (result.action !== null && action === null) action = result.action;
             recipients.push(...result.recipients);
+            if (eqIdx !== -1) {
+                if (inlineContent !== null) throw new Error("message content specified more than once");
+                inlineContent = arg.slice(eqIdx + 1);
+            }
             continue;
         }
         if (eqIdx !== -1) { extras[flagPart] = arg.slice(eqIdx + 1); continue; }
@@ -81,13 +86,16 @@ export function parseColonFlagArgv(argv, registry) {
         }
     }
 
+    const positionalContent = positional.join(" ").trim();
+    if (inlineContent !== null && positionalContent) throw new Error("message content specified more than once");
+
     const { from: fromExtra, origin: originExtra, ...meta } = extras;
     return {
         from: fromExtra || null,
         origin: originExtra || null,
         recipients: [...new Set(recipients.filter(Boolean))],
         action: action || "message",
-        content: positional.join(" ").trim(),
-        ...meta,
+        content: inlineContent !== null ? inlineContent : positionalContent,
+        meta,
     };
 }

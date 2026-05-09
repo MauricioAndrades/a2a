@@ -45,10 +45,12 @@ The install script:
 3. Installs the welcome doc to `~/.claude/a2a-welcome.md`
 4. Ensures `~/.claude/skills/a2a/groups/` and copies the bundled `star-wars` sample group when that folder is not already present
 5. Ensures `~/.claude/skills/a2a/teams/` and copies the bundled `bug-killers.yaml` sample team spec when that file is not already present
-6. Sets up the SessionStart hook for automatic context injection
-7. Adds the a2a instruction to `~/.claude/CLAUDE.md`
+
+The installer does not edit `~/.claude/settings.json`, append to `~/.claude/CLAUDE.md`, or register Claude Code hooks.
 
 Environment: **`A2A_SETUP_YES=1`** or **`CI=1`** also enables non-interactive mode for `node scripts/install.mjs`.
+
+Spawned agents do not depend on hooks for a2a awareness. `a2a start` and `a2a start-global` inject a short instruction telling every single agent, group member, and team agent to read the `a2a` skill from `~/.claude/skills/a2a/SKILL.md`, falling back to the package copy, before answering its first user message. The agent name is also passed as a lightweight persona seed, so names such as `drill-instructor`, `sammy-sosa`, or `bug-surgeon` can shape voice and working style. Additional `--prompt`, `--prompt-file`, or `--skill` content is layered after that instruction and takes priority.
 
 ## Quick start
 
@@ -118,6 +120,8 @@ a2a start-global alice                 # starts ngrok, prints share URL
 a2a start-global bob --url=<ngrok-url> # connects to the host's bridge
 ```
 
+`start-global` exposes the bridge and refuses to run unless an operator key is configured with `a2a config set key <secret>` or `A2A_KEY`. Pass `--insecure` only for deliberate unauthenticated experiments.
+
 ### Advanced
 
 ```bash
@@ -149,6 +153,22 @@ All responses follow `{success: boolean, data?: T, error?: string, timestamp: nu
 | `A2A_BRIDGE_PUBLIC` | (none)             | CLI: public URL for reply routing (set by start-global) |
 | `A2A_LOG_FILE`      | `~/.claude/skills/a2a/messages.log` | Where the bridge appends every send       |
 | `A2A_LOG`           | `1`                | Set to `0` to disable message logging                   |
+| `A2A_CHANNEL_PORT`  | `8788`             | MCP channel HTTP sidecar listen port                    |
+| `A2A_CHANNEL_HOST`  | `127.0.0.1`        | MCP channel HTTP sidecar bind address                   |
+| `A2A_CHANNEL_SENDERS` | empty            | Comma-separated allowed `X-Sender` values for channel webhooks |
+| `A2A_CHANNEL_KEY`   | empty              | Required bearer token when the channel host is non-loopback |
+| `A2A_CHANNEL_BIN`   | `a2a`              | CLI executable used by the channel reply tool           |
+
+The MCP channel is closed by default for inbound webhook posts because `A2A_CHANNEL_SENDERS` defaults to empty. For local webhook testing, set an explicit sender such as `A2A_CHANNEL_SENDERS=dev` and send `X-Sender: dev`. For non-loopback binds, set both `A2A_CHANNEL_SENDERS` and `A2A_CHANNEL_KEY`; requests must include `Authorization: Bearer <key>`.
+
+Message logging can also be configured persistently:
+
+```bash
+a2a config set log.mode off
+a2a config set log.path /path/to/messages.log
+a2a config set log.maxBytes 1048576
+a2a config set log.redactRemote true
+```
 
 ## How it works
 
@@ -168,10 +188,10 @@ For iTerm2 users, interactive `a2a` attaches now automatically prefer tmux contr
 
 ## Groups
 
-Create character groups at `~/.claude/a2a-groups/<group_name>/`:
+Create character groups at `~/.claude/skills/a2a/groups/<group_name>/`:
 
 ```
-~/.claude/a2a-groups/star-wars/
+~/.claude/skills/a2a/groups/star-wars/
   c3po.md
   chewbacca.md
   darth-vader.md

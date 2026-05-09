@@ -4,7 +4,9 @@
 import { createServer, request as httpRequest } from "http";
 import { request as httpsRequest } from "https";
 import { spawnSync } from "child_process";
-import { activePort, activeHost, writePid, removePid, loadConfig, peerKeyForUrl, appendMessageLog } from "./a2a-config.mjs";
+import { activePort, activeHost, activeKey, writePid, removePid, loadConfig, peerKeyForUrl, appendMessageLog } from "./a2a-config.mjs";
+import { wrapEnvelope } from "./server/envelope.mjs";
+import { authFromRequest, configuredPeerUrl } from "./server/auth.mjs";
 
 process.title = "a2a-bridge";
 
@@ -38,22 +40,6 @@ function ok(res, data, status = 200) {
 function fail(res, status, error) {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ success: false, error }));
-}
-
-function escapeXml(s) {
-    return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
-const ENVELOPE_RESERVED = new Set(["to","from","origin","body","action","replyTo"]);
-
-function wrapEnvelope(msg) {
-    const ts = new Date().toISOString();
-    const safeBody = String(msg.body).replace(/]]>/g, "]]]]><![CDATA[>");
-    const extras = Object.entries(msg)
-        .filter(([k]) => !ENVELOPE_RESERVED.has(k))
-        .map(([k, v]) => ` ${escapeXml(k)}="${escapeXml(String(v))}"`)
-        .join("");
-    return `<a2a_message from="${escapeXml(msg.from)}" to="${escapeXml(msg.to)}" origin="${escapeXml(msg.origin)}" action="${escapeXml(msg.action||"message")}"${extras} ts="${ts}">\n<![CDATA[\n${safeBody}\n]]>\n</a2a_message>`;
 }
 
 function sleep(ms) {
@@ -135,15 +121,7 @@ async function deliverOnce(target, content) {
 }
 
 function checkAuth(req) {
-    const cfg = loadConfig();
-    if (!cfg.key && !Object.keys(cfg.peers||{}).length) return { ok: true };
-    const header = req.headers["authorization"] || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : header;
-    if (!token) return { ok: false };
-    if (cfg.key && token === cfg.key) return { ok: true };
-    const peer = Object.entries(cfg.peers||{}).find(([, p]) => p.key === token);
-    if (peer) return { ok: true, peer: peer[0] };
-    return { ok: false };
+    return authFromRequest(req, { ...loadConfig(), key: activeKey() });
 }
 
 function remoteDeliver(targetUrl, payload) {
@@ -184,12 +162,26 @@ async function handleA2ARoutes(method, path, req, res, auth) {
         try {
             const body = await readJsonBody(req);
             if (!body.agentId || !body.tmuxTarget) { fail(res, 400, "agentId and tmuxTarget are required"); return true; }
+            const local = auth.kind === "operator" || (auth.kind === "local-open" && auth.loopback);
+            const peer = auth.kind === "peer" && auth.peer === body.agentId;
+            if (!local && !peer) { fail(res, 403, "not allowed to register this agent"); return true; }
+
+            const existing = registry.get(body.agentId);
+            if (peer && existing?.kind === "local") { fail(res, 409, "remote peer cannot overwrite local registration"); return true; }
+
+            const kind = local ? "local" : "remote";
+            const bridgeUrl = kind === "remote"
+                ? configuredPeerUrl(loadConfig(), body.agentId)
+                : body.bridgeUrl;
+            if (kind === "remote" && !bridgeUrl) { fail(res, 403, "remote peer URL is not configured"); return true; }
+
             registry.set(body.agentId, {
                 agentId: body.agentId,
+                kind,
                 tmuxTarget: body.tmuxTarget,
                 cwd: body.cwd,
                 description: body.description,
-                bridgeUrl: body.bridgeUrl,
+                bridgeUrl,
                 backend: body.backend,
                 backendArgs: Array.isArray(body.backendArgs) ? body.backendArgs : undefined,
                 backendEnv: body.backendEnv && typeof body.backendEnv === "object" ? body.backendEnv : undefined,
@@ -226,8 +218,15 @@ async function handleA2ARoutes(method, path, req, res, auth) {
                 appendMessageLog({ from: body.from, to: body.to, action: body.action, origin: body.origin, body: body.body, ok: false, error: `invalid origin '${body.origin}'` });
                 return true;
             }
-            if (body.replyTo && !registry.has(body.from) && auth.peer === body.from) {
-                registry.set(body.from, { agentId: body.from, tmuxTarget: `${body.from}:0.0`, bridgeUrl: body.replyTo, registeredAt: Date.now() });
+            if (body.replyTo && !registry.has(body.from) && auth.kind === "peer" && auth.peer === body.from) {
+                const bridgeUrl = configuredPeerUrl(loadConfig(), body.from) || String(body.replyTo).replace(/\/$/, "");
+                registry.set(body.from, {
+                    agentId: body.from,
+                    kind: "remote",
+                    tmuxTarget: `${body.from}:0.0`,
+                    bridgeUrl,
+                    registeredAt: Date.now(),
+                });
             }
             const recipient = registry.get(body.to);
             if (!recipient) {

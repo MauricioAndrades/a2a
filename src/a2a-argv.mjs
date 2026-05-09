@@ -9,6 +9,23 @@ const ACTION_ALIASES = {
 
 const VALUE_FLAGS = new Set(["content", "from", "origin", "to"]);
 
+function hasRegistrySet(registry, key) {
+    return registry && registry[key] instanceof Set;
+}
+
+function isKnownRecipient(key, registry) {
+    if (!hasRegistrySet(registry, "agents") || !hasRegistrySet(registry, "groups")) return true;
+    const lower = key.toLowerCase();
+    return registry.agents.has(key)
+        || registry.agents.has(lower)
+        || registry.groups.has(key)
+        || registry.groups.has(lower);
+}
+
+function assertKnownRecipient(key, registry) {
+    if (!isKnownRecipient(key, registry)) throw new Error(`unknown flag --${key}`);
+}
+
 function readFlagValue(args, index, eqIdx) {
     if (eqIdx !== -1) {
         return { value: args[index].slice(eqIdx + 1), nextIndex: index + 1 };
@@ -35,7 +52,7 @@ export function isFlagSendArgv(argv) {
     }
 }
 
-export function parseFlagSendArgv(argv) {
+export function parseFlagSendArgv(argv, registry = null) {
     if (!Array.isArray(argv) || argv.length === 0) return null;
 
     const recipients = [];
@@ -79,6 +96,7 @@ export function parseFlagSendArgv(argv) {
             return null;
         }
 
+        assertKnownRecipient(key, registry);
         recipients.push(key);
         sawSendSyntax = true;
         i += 1;
@@ -90,12 +108,16 @@ export function parseFlagSendArgv(argv) {
         ? flags.content
         : positional.join(" ").trim();
 
+    const to = typeof flags.to === "string" ? flags.to : undefined;
+    if (to) assertKnownRecipient(to, registry);
+
     return {
         action,
-        recipients: [...new Set(recipients)],
+        recipients: [...new Set([...(to ? [to] : []), ...recipients])],
+        broadcast: !to && recipients.length === 0,
         content,
-        from: typeof flags.from === "string" ? flags.from : undefined,
-        origin: typeof flags.origin === "string" ? flags.origin : undefined,
-        to: typeof flags.to === "string" ? flags.to : undefined,
+        from: typeof flags.from === "string" ? flags.from : null,
+        origin: typeof flags.origin === "string" ? flags.origin : null,
+        meta: {},
     };
 }

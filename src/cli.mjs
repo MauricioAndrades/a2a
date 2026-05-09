@@ -10,6 +10,7 @@ import { spawnSync, spawn } from "child_process";
 import { isFlagSendArgv, parseFlagSendArgv } from "./a2a-argv.mjs";
 import { isColonFlagArgv, parseColonFlagArgv, buildRegistry } from "./a2a-tokens.mjs";
 import { loadTeamSpec, resolveTeamSpecPath } from "./a2a-team-spec.mjs";
+import { resolveReconnectTargets as resolveReconnectTargetsPure } from "./cli/reconnect-targets.mjs";
 import {
     activeKey, bridgeUrl, readPid, writePid, removePid,
     isGroup, listGroupNames, listGroupMembers, loadConfig, loadRegistry, patchConfig,
@@ -19,11 +20,20 @@ import {
 
 const SERVER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "a2a-server.mjs");
 const REPO_TEAMS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "teams");
+const PACKAGE_A2A_SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md");
+const INSTALLED_A2A_SKILL_PATH = join(homedir(), ".claude", "skills", "a2a", "SKILL.md");
 
 const BACKENDS = { claude: "claude", gemini: "gemini", codex: "codex", "cursor-agent": "cursor-agent" };
 const BACKEND_FLAGS = new Set(Object.keys(BACKENDS));
 const COMMON_APPROVALS = new Set(["default", "plan", "edit", "never"]);
 const COMMON_SANDBOXES = new Set(["default", "read-only", "workspace-write", "danger-full-access"]);
+const AUTO_SKILL = "a2a";
+const A2A_SKILL_LOAD_PROMPT = [
+    "Before answering the first user message in this session, use your file-reading tool to read the a2a skill.",
+    `First read ${INSTALLED_A2A_SKILL_PATH}. If that file is unavailable, read ${PACKAGE_A2A_SKILL_PATH}.`,
+    "After reading it, acknowledge briefly that the a2a skill is loaded, then answer the user's message.",
+    "Follow that skill whenever you receive <a2a_message> tags or need to send/reply through a2a.",
+].join(" ");
 
 function usage(code = 2) {
     process.stderr.write(
@@ -48,13 +58,14 @@ sessions
   a2a start [NAME] [--user NAME] [--prompt TEXT] [--prompt-file PATH] [--skill NAME]...
             [--dashboard] [--claude|--gemini|--codex|--cursor-agent] [backend-flags...]
   a2a start-global [NAME] [--user NAME] [--prompt TEXT] [--prompt-file PATH] [--skill NAME]...
-            [--dashboard] [--url=<ngrok-url>] [--port=<port>] [backend-flags...]
+            [--dashboard] [--url=<ngrok-url>] [--port=<port>] [--insecure] [backend-flags...]
 
   --prompt TEXT        persona/system prompt for the spawned CLI session
   --prompt-file PATH   read persona prompt from a file (relative to cwd)
   --skill NAME         append a skill's SKILL.md to the persona prompt; repeatable.
                        resolved from ~/.claude/skills/<name>/SKILL.md, then
                        ./.claude/skills/<name>/SKILL.md
+                       Spawned agents are instructed to read the a2a skill automatically.
 
   a2a list
   a2a reconnect [NAME] [--all] [--dashboard]
@@ -79,7 +90,7 @@ config
   a2a config get <key>
   a2a config set <key> <value>
 
-  keys: port, host, key
+  keys: port, host, key, log.mode, log.path, log.maxBytes, log.redactRemote
 
   a2a gen-key
 
@@ -267,21 +278,6 @@ function buildAgentLaunchCommand(backend, backendArgs, opts = {}) {
     return `export A2A_SESSION=1; ${exports ? `${exports} ` : ""}if command -v caffeinate >/dev/null 2>&1; then exec caffeinate -i -t 3600 ${quoted}; else exec ${quoted}; fi`;
 }
 
-function buildRoleLaunchArgs(backend, backendArgs, rolePrompt) {
-    if (!rolePrompt) return backendArgs;
-    switch (backend) {
-        case "claude":
-            return [...backendArgs, "--append-system-prompt", rolePrompt];
-        case "gemini":
-            return [...backendArgs, "--prompt-interactive", rolePrompt];
-        case "codex":
-        case "cursor-agent":
-            return [...backendArgs, rolePrompt];
-        default:
-            return backendArgs;
-    }
-}
-
 /**
  * Read a skill's SKILL.md body. User-global (~/.claude/skills/<name>/SKILL.md)
  * is searched first, then project-local (./.claude/skills/<name>/SKILL.md).
@@ -296,18 +292,29 @@ function readSkillBody(name) {
 }
 
 /**
- * Compose a single persona text block from an inline prompt and a list of
- * skill names. Skills are appended after the prompt as `## Skill: <name>`
- * sections. Returns "" if both inputs are empty.
+ * Compose a single persona text block from an agent name, inline prompt, and
+ * skill list. Skills are appended after the prompt as `## Skill: <name>`
+ * sections. A compact instruction to read the a2a skill is always prepended.
  */
-function composePersona(promptText, skills) {
-    const parts = [];
+function composePersona(agentName, promptText, skills) {
+    const parts = [
+        `## Skill: ${AUTO_SKILL}\n\n${A2A_SKILL_LOAD_PROMPT}`,
+        `## Agent Name\n\nYour a2a agent name is ${agentName}. Let this name inform your personality, voice, and working style. Keep the persona lightweight and useful; explicit prompts, group files, team roles, and user instructions take priority.`,
+    ];
     if (promptText && promptText.trim()) parts.push(promptText.trim());
     for (const name of skills) {
+        if (name === AUTO_SKILL) continue;
         const { body } = readSkillBody(name);
         parts.push(`## Skill: ${name}\n\n${body.trim()}`);
     }
     return parts.join("\n\n");
+}
+
+function describePersona(promptText, skills) {
+    const bits = [AUTO_SKILL];
+    if (promptText) bits.push(`prompt (${promptText.length} chars)`);
+    if (skills.length) bits.push(`skills: ${skills.join(", ")}`);
+    return bits.join("; ");
 }
 
 /**
@@ -642,15 +649,22 @@ async function getRegistry() {
 }
 
 async function sendNormalizedEnvelope(envelope) {
+    if (!envelope.content) die("message body is required");
     const rawSelfId = currentTmuxSession();
     const selfId = isDashboardSession(rawSelfId) ? null : rawSelfId;
-    const recipients = [...envelope.to];
+    const recipients = [...new Set((envelope.recipients||[]).filter(Boolean))];
     let agents = [];
     if (recipients.length === 0) {
         agents = await listAgents();
-        const result = inferPeer(agents, selfId);
-        if (result.error) die(result.error, 1);
-        recipients.push(result.peer.agentId);
+        if (envelope.broadcast) {
+            const others = agents.filter((a) => a.agentId !== selfId);
+            if (others.length === 0) die("no peers registered -- use 'a2a start <n>' to create one", 1);
+            recipients.push(...others.map((a) => a.agentId));
+        } else {
+            const result = inferPeer(agents, selfId);
+            if (result.error) die(result.error, 1);
+            recipients.push(result.peer.agentId);
+        }
     } else {
         try { agents = await listAgents(); } catch { }
     }
@@ -660,7 +674,8 @@ async function sendNormalizedEnvelope(envelope) {
     const origin = envelope.origin || (selfId ? "peer" : "user");
     if (!["user","peer","self"].includes(origin)) die(`invalid origin '${origin}'`);
     const replyTo = process.env.A2A_BRIDGE_PUBLIC || null;
-    const { message, from: _f, to: _t, action, origin: _o, ...extras } = envelope;
+    const extras = envelope.meta || {};
+    const action = envelope.action || "message";
     for (const toId of recipients) {
         const targetAgent = agentMap[toId];
         if (targetAgent && !targetAgent.bridgeUrl && !tmuxSessionExists(toId)) {
@@ -682,7 +697,7 @@ async function sendNormalizedEnvelope(envelope) {
             }
         }
         const { status, body } = await request("POST", "/api/a2a/send", {
-            to: toId, from: fromId, origin, body: message, action,
+            to: toId, from: fromId, origin, body: envelope.content, action,
             ...(replyTo ? { replyTo } : {}), ...extras,
         });
         if (status !== 200 || !body?.success) die(`send failed: ${body?.error || `HTTP ${status}`}`, 1);
@@ -710,55 +725,6 @@ async function doSend({ flags, kv, positional }, action = "message") {
     });
     if (status !== 200 || !body?.success) die(`send failed: ${body?.error || `HTTP ${status}`}`, 1);
     info(`${fromId} -> ${toId} [${origin}/${action}] (${body.data?.bytes ?? "?"} bytes)`);
-}
-
-async function doParsedFlagSend(parsed) {
-    const rawSelfId = currentTmuxSession();
-    const selfId = isDashboardSession(rawSelfId) ? null : rawSelfId;
-    const fromId = parsed.from || selfId || "cli";
-    const origin = parsed.origin || (selfId ? "peer" : "user");
-    if (!["user","peer","self"].includes(origin)) die(`invalid origin '${origin}'`);
-    const recipients = [...new Set([...(parsed.to ? [parsed.to] : []), ...(parsed.recipients||[])].filter(Boolean))];
-    let agents = [];
-    if (recipients.length === 0) {
-        agents = await listAgents();
-        const others = agents.filter((a) => a.agentId !== selfId);
-        if (others.length === 0) die("no peers registered -- use 'a2a start <n>' to create one", 1);
-        recipients.push(...others.map((a) => a.agentId));
-    } else {
-        try { agents = await listAgents(); } catch { }
-    }
-    const agentMap = {};
-    for (const agent of agents) agentMap[agent.agentId] = agent;
-    const replyTo = process.env.A2A_BRIDGE_PUBLIC || null;
-    for (const toId of recipients) {
-        if (!parsed.content) die("message body is required");
-        const targetAgent = agentMap[toId];
-        if (targetAgent && !targetAgent.bridgeUrl && !tmuxSessionExists(toId)) {
-            info(`${toId} session dead, attempting restart...`);
-            try {
-                const restartBackend = targetAgent.backend || "claude";
-                const restartArgs = Array.isArray(targetAgent.backendArgs) ? targetAgent.backendArgs : [];
-                const cmd = buildAgentLaunchCommand(restartBackend, restartArgs, { env: targetAgent.backendEnv || {} });
-                const r = tmux(["new-session", "-d", "-s", toId, "-c", targetAgent.cwd || process.cwd(), cmd]);
-                if (r.status === 0) {
-                    info(`${toId} restarted`);
-                    await new Promise((r) => setTimeout(r, 500));
-                    if (!tmuxSessionExists(toId)) info(`restart exited immediately for ${toId}, will attempt to send anyway`);
-                } else {
-                    info(`restart failed for ${toId}, will attempt to send anyway`);
-                }
-            } catch (err) {
-                info(`restart error: ${err.message}`);
-            }
-        }
-        const { status, body } = await request("POST", "/api/a2a/send", {
-            to: toId, from: fromId, origin, body: parsed.content, action: parsed.action || "message",
-            ...(replyTo ? { replyTo } : {}),
-        });
-        if (status !== 200 || !body?.success) die(`send failed: ${body?.error || `HTTP ${status}`}`, 1);
-        info(`${fromId} -> ${toId} [${origin}/${parsed.action||"message"}] (${body.data?.bytes ?? "?"} bytes)`);
-    }
 }
 
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -905,7 +871,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
         validateAgentId(char.name);
         const target = `${char.name}:0.0`;
         const prompt = readFileSync(char.fullPath, "utf8").trim();
-        const memberArgs = buildRoleLaunchArgs(backend, backendArgs, prompt);
+        const memberArgs = applyPersonaToBackendArgs(backend, backendArgs, composePersona(char.name, prompt, []));
         if (!tmuxSessionExists(char.name)) {
             const r = tmux(["new-session", "-d", "-s", char.name, "-c", process.cwd(), buildAgentLaunchCommand(backend, memberArgs)]);
             if (r.status !== 0) { info(`  ${char.name}: FAILED: ${(r.stderr||"").trim()}`); continue; }
@@ -953,7 +919,7 @@ async function startTeam(teamSpec, opts = {}) {
     for (const agent of teamSpec.agents) {
         validateAgentId(agent.id);
         requireBinary(BACKENDS[agent.backend] || "claude");
-        const launchArgs = buildRoleLaunchArgs(agent.backend, translateCommonAgentSettings(agent), agent.rolePrompt);
+        const launchArgs = applyPersonaToBackendArgs(agent.backend, translateCommonAgentSettings(agent), composePersona(agent.id, agent.rolePrompt, []));
         const target = `${agent.id}:0.0`;
         if (!tmuxSessionExists(agent.id)) {
             const r = tmux(["new-session", "-d", "-s", agent.id, "-c", agent.cwd, buildAgentLaunchCommand(agent.backend, launchArgs, { env: agent.env })]);
@@ -1018,12 +984,9 @@ async function cmdStart(args) {
         await startGroup(name, backend, backendArgs, { dashboard });
         return;
     }
-    const personaText = composePersona(promptText, skills);
+    const personaText = composePersona(name, promptText, skills);
     if (personaText) {
-        const bits = [];
-        if (promptText) bits.push(`prompt (${promptText.length} chars)`);
-        if (skills.length) bits.push(`skills: ${skills.join(", ")}`);
-        info(`persona: ${bits.join("; ")}`);
+        info(`persona: ${describePersona(promptText, skills)}`);
     }
     const finalArgs = applyPersonaToBackendArgs(backend, backendArgs, personaText);
     await startSingle(name, backend, finalArgs);
@@ -1037,16 +1000,19 @@ async function cmdStartGlobal(args) {
     const name = rawName ? sanitizeId(rawName) : sanitizeId(basename(process.cwd()));
     if (!teamSpec && isGroup(name) && hasPersona) die(`--prompt/--prompt-file/--skill cannot be combined with group '${name}'; group members already inject their own prompts from the group's .md files`);
 
+    const insecure = args.includes("--insecure");
+    if (!activeKey() && !insecure) {
+        die("start-global exposes the bridge and requires an operator key; run `a2a config set key <secret>` or pass --insecure", 1);
+    }
+    if (insecure) info("warning: exposing bridge without an operator key because --insecure was supplied");
+
     const urlFlag = args.find((a) => a.startsWith("--url="))?.slice(6);
     const portFlag = args.find((a) => a.startsWith("--port="))?.slice(7);
-    const filteredBackendArgs = backendArgs.filter((a) => !a.startsWith("--url=") && !a.startsWith("--port="));
+    const filteredBackendArgs = backendArgs.filter((a) => !a.startsWith("--url=") && !a.startsWith("--port=") && a !== "--insecure");
 
-    const personaText = composePersona(promptText, skills);
+    const personaText = composePersona(name, promptText, skills);
     if (personaText) {
-        const bits = [];
-        if (promptText) bits.push(`prompt (${promptText.length} chars)`);
-        if (skills.length) bits.push(`skills: ${skills.join(", ")}`);
-        info(`persona: ${bits.join("; ")}`);
+        info(`persona: ${describePersona(promptText, skills)}`);
     }
     const filteredArgsWithPersona = applyPersonaToBackendArgs(backend, filteredBackendArgs, personaText);
 
@@ -1202,19 +1168,15 @@ async function cmdPeek(args) {
 }
 
 function resolveReconnectTargets(name, hasAll) {
-    if (name && isGroup(name)) return { targets: listGroupMembers(name).map((m) => m.name), viewSession: `${name}-view` };
-    if (name) {
-        const teamSpec = loadResolvedTeamSpec(name);
-        if (teamSpec) return { targets: teamSpec.agents.map((a) => a.id), viewSession: `${teamSpec.name}-view`, description: `team:${teamSpec.name}` };
-    }
-    if (name) return { targets: [name], viewSession: null };
-    const live = tmuxListSessions().filter((id) => !id.endsWith("-view"));
-    if (hasAll) return { targets: live, viewSession: "a2a-view" };
-
-    const cached = loadRegistry().agents || [];
-    const cachedLive = cached.filter((id) => live.includes(id));
-    if (cachedLive.length > 0) return { targets: cachedLive, viewSession: null };
-    return { targets: live, viewSession: null };
+    return resolveReconnectTargetsPure({
+        name,
+        hasAll,
+        isGroup,
+        listGroupMembers,
+        loadResolvedTeamSpec,
+        tmuxListSessions,
+        loadRegistry,
+    });
 }
 
 function buildReconnectView(viewSession, members) {
@@ -1449,9 +1411,9 @@ async function main() {
 
     if (isFlagSendArgv(argv)) {
         try {
-            const parsed = parseFlagSendArgv(argv);
+            const parsed = parseFlagSendArgv(argv, await getRegistry());
             if (!parsed) die("could not parse send arguments", 1);
-            await doParsedFlagSend(parsed); return;
+            await sendNormalizedEnvelope(parsed); return;
         } catch (err) { die(err.message, 1); }
     }
 

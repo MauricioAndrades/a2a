@@ -16,6 +16,12 @@ const CONFIG_DEFAULTS = {
     host: "127.0.0.1",
     key:  null,
     peers: {},
+    log: {
+        mode: "on",
+        path: null,
+        maxBytes: 0,
+        redactRemote: false,
+    },
 };
 
 const REGISTRY_DEFAULTS = {
@@ -23,7 +29,7 @@ const REGISTRY_DEFAULTS = {
     groups: [],
 };
 
-const USER_KEYS = ["port", "host", "key"];
+const USER_KEYS = ["port", "host", "key", "log.mode", "log.path", "log.maxBytes", "log.redactRemote"];
 
 function ensureDirs() {
     mkdirSync(SKILL_DIR, { recursive: true });
@@ -55,12 +61,29 @@ export function patchConfig(changes) {
     return updated;
 }
 
+function nestedGet(obj, dotted) {
+    return dotted.split(".").reduce((acc, key) => acc == null ? undefined : acc[key], obj);
+}
+
+function nestedSet(obj, dotted, value) {
+    const parts = dotted.split(".");
+    const out = { ...obj };
+    let cursor = out;
+    for (const part of parts.slice(0, -1)) {
+        cursor[part] = { ...(cursor[part] || {}) };
+        cursor = cursor[part];
+    }
+    cursor[parts.at(-1)] = value;
+    return out;
+}
+
 export function configGet(key) {
     if (key !== undefined && !USER_KEYS.includes(key)) {
         throw new Error(`unknown setting '${key}' (available: ${USER_KEYS.join(", ")})`);
     }
     const cfg = loadConfig();
-    return key ? (cfg[key] ?? null) : Object.fromEntries(USER_KEYS.map((k) => [k, cfg[k] ?? null]));
+    if (key) return nestedGet(cfg, key) ?? null;
+    return Object.fromEntries(USER_KEYS.map((k) => [k, nestedGet(cfg, k) ?? null]));
 }
 
 export function configSet(key, value) {
@@ -77,8 +100,20 @@ export function configSet(key, value) {
         coerced = value.trim();
     }
     if (key === "key" && (value === "" || value === null)) coerced = null;
-    patchConfig({ [key]: coerced });
-    return coerced;
+    if (key === "log.mode") {
+        if (value !== "on" && value !== "off") throw new Error("log.mode must be on or off");
+    }
+    if (key === "log.path" && value === "") coerced = null;
+    if (key === "log.maxBytes") {
+        coerced = parseInt(value, 10);
+        if (!Number.isFinite(coerced) || coerced < 0) throw new Error("log.maxBytes must be a non-negative integer");
+    }
+    if (key === "log.redactRemote") {
+        if (value !== "true" && value !== "false") throw new Error("log.redactRemote must be true or false");
+        coerced = value === "true";
+    }
+    const updated = patchConfig(nestedSet(loadConfig(), key, coerced));
+    return nestedGet(updated, key);
 }
 
 export function activeKey() {
@@ -178,11 +213,27 @@ export function peerKeyForUrl(url) {
 
 export function messageLogPath() {
     const env = (process.env.A2A_LOG_FILE || "").trim();
-    return env || DEFAULT_LOG_FILE;
+    return env || logConfig().path || DEFAULT_LOG_FILE;
 }
 
 export function messageLogEnabled() {
-    return process.env.A2A_LOG !== "0";
+    if (process.env.A2A_LOG === "0") return false;
+    if (process.env.A2A_LOG === "1") return true;
+    return logConfig().mode !== "off";
+}
+
+function logConfig() {
+    const cfg = loadConfig();
+    return { ...CONFIG_DEFAULTS.log, ...(cfg.log || {}) };
+}
+
+export function messageLogMaxBytes() {
+    const n = Number(logConfig().maxBytes || 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+export function messageLogRedactRemote() {
+    return logConfig().redactRemote === true;
 }
 
 /**
@@ -205,11 +256,23 @@ export function appendMessageLog(entry) {
         const status = entry.ok ? `ok${transport}` : `FAIL${transport}: ${entry.error || "unknown"}`;
         const bytes = Number.isFinite(entry.bytes) ? `${entry.bytes}B` : "-";
         const head = `[${stamp}] ${entry.from} -> ${entry.to}  ${action}/${entry.origin}  ${bytes}  ${status}`;
-        const body = (entry.body == null ? "" : String(entry.body))
+        const logPath = messageLogPath();
+        const rawBody = messageLogRedactRemote() && entry.transport === "remote"
+            ? "[redacted remote body]"
+            : (entry.body == null ? "" : String(entry.body));
+        const body = rawBody
             .replace(/\r\n/g, "\n")
             .split("\n")
             .map((l) => "    " + l)
             .join("\n");
-        appendFileSync(messageLogPath(), head + "\n" + body + "\n", { mode: 0o644 });
+        appendFileSync(logPath, head + "\n" + body + "\n", { mode: 0o644 });
+        const maxBytes = messageLogMaxBytes();
+        if (maxBytes > 0) {
+            const size = statSync(logPath).size;
+            if (size > maxBytes) {
+                const raw = readFileSync(logPath);
+                writeFileSync(logPath, raw.slice(-maxBytes), { mode: 0o644 });
+            }
+        }
     } catch { /* best effort -- never fail a delivery because of logging */ }
 }
