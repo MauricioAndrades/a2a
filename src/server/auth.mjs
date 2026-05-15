@@ -1,5 +1,18 @@
+import { createHash, timingSafeEqual } from "crypto";
+
 export function isLoopbackAddress(address) {
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+/**
+ * Constant-time UTF-8 string compare without revealing length via `===` short-circuit.
+ * Maps both sides through SHA-256 so `timingSafeEqual` always runs on 32-byte digests.
+ */
+export function secretsEqualUtf8(a, b) {
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    const da = createHash("sha256").update(a, "utf8").digest();
+    const db = createHash("sha256").update(b, "utf8").digest();
+    return timingSafeEqual(da, db);
 }
 
 /**
@@ -17,15 +30,25 @@ export function isTrustedBrowserLoopbackHostname(hostname) {
 
 export function authFromRequest(req, cfg) {
     const loopback = isLoopbackAddress(req.socket?.remoteAddress || "");
-    if (!cfg.key && !Object.keys(cfg.peers||{}).length) {
+    if (!cfg.key && !Object.keys(cfg.peers || {}).length) {
         return loopback ? { ok: true, kind: "local-open", loopback } : { ok: false };
     }
     const header = req.headers["authorization"] || "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : header;
     if (!token) return { ok: false };
-    if (cfg.key && token === cfg.key) return { ok: true, kind: "operator", loopback };
-    const peer = Object.entries(cfg.peers||{}).find(([, p]) => p.key === token);
-    if (peer) return { ok: true, kind: "peer", peer: peer[0], loopback };
+
+    /** Always evaluate every peer digest so match position does not leak via early exit */
+    let matchedPeer = null;
+    for (const [name, p] of Object.entries(cfg.peers || {})) {
+        const pk = typeof p?.key === "string" ? p.key : "";
+        if (pk && secretsEqualUtf8(token, pk)) matchedPeer = name;
+    }
+
+    const operatorConfigured = typeof cfg.key === "string" && cfg.key !== "";
+    if (operatorConfigured && secretsEqualUtf8(token, cfg.key)) {
+        return { ok: true, kind: "operator", loopback };
+    }
+    if (matchedPeer !== null) return { ok: true, kind: "peer", peer: matchedPeer, loopback };
     return { ok: false };
 }
 

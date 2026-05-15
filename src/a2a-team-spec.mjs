@@ -56,9 +56,21 @@ export function loadTeamSpec(specPath) {
     const raw = stripUtf8Bom(file);
     const ext = extname(specPath).toLowerCase();
     let data;
-    if (ext === ".json") data = JSON.parse(raw);
-    else if (ext === ".yaml" || ext === ".yml") data = parseYaml(raw);
-    else throw new Error(`unsupported team spec extension '${ext}'`);
+    if (ext === ".json") {
+        try {
+            data = JSON.parse(raw);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            throw new Error(`team spec JSON parse failed '${specPath}': ${msg}`);
+        }
+    } else if (ext === ".yaml" || ext === ".yml") {
+        try {
+            data = parseYaml(raw);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            throw new Error(`team spec YAML parse failed '${specPath}': ${msg}`);
+        }
+    } else throw new Error(`unsupported team spec extension '${ext}'`);
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("team spec must be a top-level object");
     return data;
 }

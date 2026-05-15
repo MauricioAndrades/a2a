@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { authFromRequest, configuredPeerUrl, isLoopbackAddress, isTrustedBrowserLoopbackHostname } from "../src/server/auth.mjs";
+import { authFromRequest, configuredPeerUrl, isLoopbackAddress, isTrustedBrowserLoopbackHostname, secretsEqualUtf8 } from "../src/server/auth.mjs";
 import { channelStartupProblem, parseAllowedSenders } from "../src/channel/auth.mjs";
 
 function req({ address = "127.0.0.1", authorization = "" } = {}) {
@@ -18,6 +18,12 @@ test("operator key authenticates as operator", () => {
         kind: "operator",
         loopback: true,
     });
+});
+
+test("secretsEqualUtf8 is exact full-string match under SHA-256 digests", () => {
+    assert.equal(secretsEqualUtf8("root", "root"), true);
+    assert.equal(secretsEqualUtf8("root", "rootx"), false);
+    assert.equal(secretsEqualUtf8("snowman-\u2603", "snowman-\u2603"), true);
 });
 
 test("peer key authenticates as peer", () => {

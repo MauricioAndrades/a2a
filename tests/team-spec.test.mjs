@@ -38,3 +38,10 @@ test("loadTeamSpec accepts UTF-8 BOM on JSON files (editor interoperability)", (
     assert.equal(data.name, "bom");
     assert.equal(data.agents[0].id, "ralph");
 });
+
+test("loadTeamSpec wraps YAML syntax errors with the spec path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "a2a-yaml-bad-"));
+    const spec = join(dir, "broken.yaml");
+    writeFileSync(spec, "agents: [\n  - not closed\n", "utf8");
+    assert.throws(() => loadTeamSpec(spec), /team spec YAML parse failed .*broken\.yaml/);
+});

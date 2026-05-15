@@ -30,6 +30,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { z } from "zod";
 import { bearerToken, channelStartupProblem, isLoopbackHost, parseAllowedSenders } from "./channel/auth.mjs";
 import { readTextBody } from "./channel/read-text-body.mjs";
+import { broadcastSseChunk, sseFrameFromText } from "./channel/sse-utils.mjs";
 
 const PORT = Number.parseInt(process.env.A2A_CHANNEL_PORT || "8788", 10) || 8788;
 const HOST = process.env.A2A_CHANNEL_HOST || "127.0.0.1";
@@ -48,8 +49,7 @@ if (startupProblem) {
 const listeners = new Set();
 
 function sseSend(text) {
-    const chunk = text.split("\n").map((l) => `data: ${l}\n`).join("") + "\n";
-    for (const emit of listeners) emit(chunk);
+    broadcastSseChunk(listeners, sseFrameFromText(text));
 }
 
 function validatePeerId(id) {
@@ -176,12 +176,13 @@ const httpServer = createServer(async (req, res) => {
         res.write(": connected\n\n");
         /** @param {string} chunk */
         const emit = (chunk) => {
-            res.write(chunk);
+            if (!res.writableEnded) res.write(chunk);
         };
         listeners.add(emit);
-        req.on("close", () => {
-            listeners.delete(emit);
-        });
+        const detach = () => listeners.delete(emit);
+        req.on("close", detach);
+        res.on("close", detach);
+        res.on("error", detach);
         return;
     }
 
