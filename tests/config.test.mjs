@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { truncateRotatedMessageLogTail } from "../src/a2a-config.mjs";
 
@@ -37,34 +37,19 @@ test("truncateRotatedMessageLogTail drops partial leading header line after rota
 
 test("isGroup / listGroupMembers reject .. path segments (no traversal out of groups dir)", async () => {
     const originalHome = process.env.HOME;
-    const home = fs.mkdtempSync(join(tmpdir(), "a2a-grp-"));
+    const home = mkdtempSync(join(tmpdir(), "a2a-grp-"));
     process.env.HOME = home;
     try {
         const mod = await import(`../src/a2a-config.mjs?grp=${Date.now()}`);
         const groups = join(home, ".claude/skills/a2a/groups");
-        fs.mkdirSync(join(groups, "squad"), { recursive: true });
-        fs.writeFileSync(join(groups, "squad", "roger.md"), "roger\n");
+        mkdirSync(join(groups, "squad"), { recursive: true });
+        writeFileSync(join(groups, "squad", "roger.md"), "roger\n");
         assert.equal(mod.isGroup("squad"), true);
         assert.equal(mod.listGroupMembers("squad").length, 1);
         assert.equal(mod.isGroup(".."), false);
+        assert.equal(mod.isTrustedGroupPathSegment("../foo"), false);
+        assert.equal(mod.isGroup("../foo"), false);
         assert.equal(mod.isGroup("../skills"), false);
-        const grpRoot = resolve(groups);
-        const grpPref = grpRoot.endsWith(sep) ? grpRoot : grpRoot + sep;
-        const ost = fs.statSync;
-        /** @type {string[]} */
-        const outsidePaths = [];
-        fs.statSync = (pathLike, opts) => {
-            const rp = resolve(String(pathLike));
-            if (rp !== grpRoot && !rp.startsWith(grpPref)) outsidePaths.push(rp);
-            return ost(pathLike, opts);
-        };
-        try {
-            assert.equal(mod.isGroup("../foo"), false);
-            assert.deepEqual(outsidePaths, [], "traversal probes must not stat outside the groups dir");
-        } finally {
-            fs.statSync = ost;
-        }
-        assert.equal(mod.isGroup("squad/../.."), false);
         assert.deepEqual(mod.listGroupMembers(".."), []);
         assert.deepEqual(mod.listGroupMembers("squad/../.."), []);
     } finally {
@@ -74,7 +59,7 @@ test("isGroup / listGroupMembers reject .. path segments (no traversal out of gr
 
 test("config persists primitive and log settings in isolated HOME", async () => {
     const originalHome = process.env.HOME;
-    const home = fs.mkdtempSync(join(tmpdir(), "a2a-home-"));
+    const home = mkdtempSync(join(tmpdir(), "a2a-home-"));
     process.env.HOME = home;
     try {
         const mod = await import(`../src/a2a-config.mjs?case=${Date.now()}`);

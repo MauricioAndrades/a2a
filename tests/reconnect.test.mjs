@@ -22,6 +22,18 @@ test("no name prefers cached live agents", () => {
     assert.deepEqual(resolveReconnectTargets({ ...base, name: null, hasAll: false }), { targets: ["leah"], viewSession: null });
 });
 
+test("corrupt registry agents skips cache slice and falls back to all live sessions", () => {
+    assert.deepEqual(
+        resolveReconnectTargets({
+            ...base,
+            name: null,
+            hasAll: false,
+            loadRegistry: () => ({ agents: { bad: true } }),
+        }),
+        { targets: ["bob", "leah"], viewSession: null },
+    );
+});
+
 test("group name resolves group members and view", () => {
     const result = resolveReconnectTargets({
         ...base,

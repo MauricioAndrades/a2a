@@ -9,17 +9,12 @@ const ACTION_ALIASES = {
 
 const VALUE_FLAGS = new Set(["content", "from", "origin", "to"]);
 
-function hasRegistrySet(registry, key) {
-    return registry && registry[key] instanceof Set;
-}
-
 function isKnownRecipient(key, registry) {
-    if (!hasRegistrySet(registry, "agents") || !hasRegistrySet(registry, "groups")) return true;
+    if (registry == null || typeof registry !== "object") return true;
+    const agents = registry.agents instanceof Set ? registry.agents : new Set();
+    const groups = registry.groups instanceof Set ? registry.groups : new Set();
     const lower = key.toLowerCase();
-    return registry.agents.has(key)
-        || registry.agents.has(lower)
-        || registry.groups.has(key)
-        || registry.groups.has(lower);
+    return agents.has(key) || agents.has(lower) || groups.has(key) || groups.has(lower);
 }
 
 function assertKnownRecipient(key, registry) {

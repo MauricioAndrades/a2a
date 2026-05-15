@@ -190,12 +190,18 @@ export function removePid() {
 /** Single segment only: no slashes, no ".." escapes; aligns with ~/.claude/skills/a2a/groups/<name>/ */
 const SAFE_GROUP_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
-function resolvedTrustedGroupDirectory(name) {
-    if (name == null || typeof name !== "string") return null;
+/** Rejects traversal before any path joins / statSync — use in tests + internal guard. */
+export function isTrustedGroupPathSegment(name) {
+    if (name == null || typeof name !== "string") return false;
     const trimmed = name.trim();
-    if (trimmed === "" || trimmed === "." || trimmed === "..") return null;
-    if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) return null;
-    if (!SAFE_GROUP_SEGMENT.test(trimmed)) return null;
+    if (trimmed === "" || trimmed === "." || trimmed === "..") return false;
+    if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) return false;
+    return SAFE_GROUP_SEGMENT.test(trimmed);
+}
+
+function resolvedTrustedGroupDirectory(name) {
+    if (!isTrustedGroupPathSegment(name)) return null;
+    const trimmed = name.trim();
 
     const abs = resolve(join(GROUPS_DIR, trimmed));
     const root = resolve(GROUPS_DIR);

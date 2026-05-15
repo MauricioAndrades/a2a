@@ -17,3 +17,32 @@ test("wrapEnvelope escapes embedded close tags and CDATA terminators as text", (
     assert.match(out, /x\]\]&gt;y&lt;\/a2a_message&gt;/);
     assert.doesNotMatch(out, /<!\[CDATA\[/);
 });
+
+test("wrapEnvelope drops illegal XML chars (NUL, C0 controls, lone surrogates)", () => {
+    const nulBody = wrapEnvelope({
+        from: "a",
+        to: "b",
+        origin: "user",
+        body: "before\u0000after\u000b",
+    });
+    assert.ok(!nulBody.includes("\u0000"));
+    assert.match(nulBody, /beforeafter/);
+
+    const mixed = wrapEnvelope({
+        from: "a\uD800",
+        to: "b",
+        origin: "user",
+        body: "\u001fx",
+        tag: "!",
+    });
+    assert.match(mixed, /from="a"/);
+    assert.ok(!mixed.includes("\u001f"));
+
+    /** Valid supplementary emoji preserved */
+    const ok = wrapEnvelope({ from: "z", to: "z", origin: "user", body: "\u{1f600}done" });
+    assert.match(ok.split("\n")[1], /^\u{1f600}done$/u);
+
+    /** Lone low surrogate stripped from body without breaking following text */
+    const lone = wrapEnvelope({ from: "z", to: "z", origin: "user", body: "\uDC00tail" });
+    assert.match(lone.split("\n")[1], /^tail$/);
+});

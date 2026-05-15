@@ -37,6 +37,19 @@ test("flag-form folds --to into normalized recipients", () => {
     });
 });
 
+test("flag-form validates recipients when only agents OR groups Set is present", () => {
+    assert.deepEqual(parseFlagSendArgv(["--reply", "--bob", "hey"], { agents: new Set(["bob"]) }), {
+        action: "reply",
+        recipients: ["bob"],
+        broadcast: false,
+        content: "hey",
+        from: null,
+        origin: null,
+        meta: {},
+    });
+    assert.throws(() => parseFlagSendArgv(["--reply", "--eve", "no"], { agents: new Set(["bob"]) }), /unknown flag --eve/);
+});
+
 test("flag-form marks action-only sends as broadcast", () => {
     assert.deepEqual(parseFlagSendArgv(["--message", "done"], registry), {
         action: "message",

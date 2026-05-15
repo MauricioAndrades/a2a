@@ -25,3 +25,16 @@ test("loads YAML team specs with block scalars and lists", () => {
     assert.equal(data.agents[0].id, "bob");
     assert.match(data.agents[0].role, /hello\nthere/);
 });
+
+test("loadTeamSpec accepts UTF-8 BOM on JSON files (editor interoperability)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "a2a-teambom-"));
+    const spec = join(dir, "team.json");
+    const body = JSON.stringify({
+        name: "bom",
+        agents: [{ id: "ralph", backend: "claude" }],
+    });
+    writeFileSync(spec, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(body, "utf8")]));
+    const data = loadTeamSpec(spec);
+    assert.equal(data.name, "bom");
+    assert.equal(data.agents[0].id, "ralph");
+});

@@ -17,6 +17,11 @@ function maybeRead(path) {
     }
 }
 
+/** Strip BOM so JSON.parse / yaml.load match files saved by common editors */
+function stripUtf8Bom(s) {
+    return typeof s === "string" ? s.replace(/^\uFEFF/, "") : s;
+}
+
 function candidatePaths(ref, cwd, repoTeamsDir, installedTeamsDir) {
     const refs = [];
     const direct = isAbsolute(ref) ? ref : resolve(cwd, ref);
@@ -46,8 +51,9 @@ export function resolveTeamSpecPath(ref, cwd, repoTeamsDir, installedTeamsDir) {
 }
 
 export function loadTeamSpec(specPath) {
-    const raw = maybeRead(specPath);
-    if (raw == null) throw new Error(`could not read team spec '${specPath}'`);
+    const file = maybeRead(specPath);
+    if (file == null) throw new Error(`could not read team spec '${specPath}'`);
+    const raw = stripUtf8Bom(file);
     const ext = extname(specPath).toLowerCase();
     let data;
     if (ext === ".json") data = JSON.parse(raw);
