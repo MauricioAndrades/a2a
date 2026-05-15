@@ -185,6 +185,7 @@ async function handleA2ARoutes(method, path, req, res, auth) {
                 backend: body.backend,
                 backendArgs: Array.isArray(body.backendArgs) ? body.backendArgs : undefined,
                 backendEnv: body.backendEnv && typeof body.backendEnv === "object" ? body.backendEnv : undefined,
+                startupPrompt: typeof body.startupPrompt === "string" ? body.startupPrompt : undefined,
                 registeredAt: Date.now(),
             });
             ok(res, registry.get(body.agentId));

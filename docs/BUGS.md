@@ -31,7 +31,7 @@ const safeBody = msg.body.replace(/<\/a2a_message>/gi, "<\\/a2a_message>");
 
 In XML, `\/` is not an escape sequence. `<\/a2a_message>` is parsed identically to `</a2a_message>`. A body containing the literal string `</a2a_message>` still closes the envelope early, allowing injection of fake envelope attributes or additional messages into the receiving agent's input stream. The guard does nothing.
 
-**Fix:** Do not attempt in-band XML escaping of untrusted body content. Base64-encode the body inside the envelope, or wrap it in a CDATA section (`<![CDATA[...]]>`) replacing any `]]>` in the body with `]]]]><![CDATA[>`.
+**Fix:** Do not attempt fake slash escaping of untrusted body content. XML-escape body text before placing it inside the envelope, or use another structured encoding that cannot terminate the envelope.
 
 ---
 

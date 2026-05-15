@@ -12,7 +12,7 @@ import { isColonFlagArgv, parseColonFlagArgv, buildRegistry } from "./a2a-tokens
 import { loadTeamSpec, resolveTeamSpecPath } from "./a2a-team-spec.mjs";
 import { resolveReconnectTargets as resolveReconnectTargetsPure } from "./cli/reconnect-targets.mjs";
 import {
-    activeKey, bridgeUrl, readPid, writePid, removePid,
+    activeKey, activeUrl, bridgeUrl, readPid, writePid, removePid,
     isGroup, listGroupNames, listGroupMembers, loadConfig, loadRegistry, patchConfig,
     generateKey, configGet, configSet, messageLogPath,
     teamSpecsDir,
@@ -28,6 +28,13 @@ const BACKEND_FLAGS = new Set(Object.keys(BACKENDS));
 const COMMON_APPROVALS = new Set(["default", "plan", "edit", "never"]);
 const COMMON_SANDBOXES = new Set(["default", "read-only", "workspace-write", "danger-full-access"]);
 const AUTO_SKILL = "a2a";
+const DEFAULT_INLINE_PERSONA_COMMAND_MAX = 1800;
+const STARTUP_PASTE_SETTLE_FLOOR_MS = 500;
+const STARTUP_PASTE_SETTLE_PER_KB_MS = 60;
+const STARTUP_PASTE_SETTLE_CEILING_MS = 1500;
+const STARTUP_PASTE_VERIFY_RETRY_DELAY_MS = 200;
+const STARTUP_PASTE_MAX_ENTER_RETRIES = 5;
+const STARTUP_PASTE_PLACEHOLDER_PATTERN = /\[Pasted text #\d+/;
 const A2A_SKILL_LOAD_PROMPT = [
     "Before answering the first user message in this session, use your file-reading tool to read the a2a skill.",
     `First read ${INSTALLED_A2A_SKILL_PATH}. If that file is unavailable, read ${PACKAGE_A2A_SKILL_PATH}.`,
@@ -90,7 +97,7 @@ config
   a2a config get <key>
   a2a config set <key> <value>
 
-  keys: port, host, key, log.mode, log.path, log.maxBytes, log.redactRemote
+  keys: port, host, url, key, log.mode, log.path, log.maxBytes, log.redactRemote
 
   a2a gen-key
 
@@ -189,7 +196,11 @@ function requireBinary(name) {
 
 function tmux(args, opts = {}) {
     if (opts.inherit) return spawnSync("tmux", args, { encoding: "utf8", stdio: "inherit" });
-    return spawnSync("tmux", args, { encoding: "utf8", stdio: ["ignore","pipe","pipe"] });
+    return spawnSync("tmux", args, {
+        encoding: "utf8",
+        input: opts.input,
+        stdio: opts.input == null ? ["ignore","pipe","pipe"] : ["pipe","pipe","pipe"],
+    });
 }
 
 function tmuxSessionExists(id) { return tmux(["has-session", "-t", id]).status === 0; }
@@ -278,6 +289,13 @@ function buildAgentLaunchCommand(backend, backendArgs, opts = {}) {
     return `export A2A_SESSION=1; ${exports ? `${exports} ` : ""}if command -v caffeinate >/dev/null 2>&1; then exec caffeinate -i -t 3600 ${quoted}; else exec ${quoted}; fi`;
 }
 
+function inlinePersonaCommandMax() {
+    const raw = process.env.A2A_INLINE_PERSONA_COMMAND_MAX;
+    if (raw == null || raw === "") return DEFAULT_INLINE_PERSONA_COMMAND_MAX;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : DEFAULT_INLINE_PERSONA_COMMAND_MAX;
+}
+
 /**
  * Read a skill's SKILL.md body. User-global (~/.claude/skills/<name>/SKILL.md)
  * is searched first, then project-local (./.claude/skills/<name>/SKILL.md).
@@ -347,6 +365,65 @@ function applyPersonaToBackendArgs(backend, backendArgs, personaText) {
         default:
             return backendArgs;
     }
+}
+
+function buildPersonaStartupMessage(personaText) {
+    return `You are starting an a2a agent session. Treat the following text as your startup persona, skills, and task brief for this entire session. Adopt it now, then begin the requested work.\n\n${personaText}`;
+}
+
+function preparePersonaDelivery(backend, backendArgs, personaText, opts = {}) {
+    const inlineArgs = applyPersonaToBackendArgs(backend, backendArgs, personaText);
+    if (!personaText) return { backendArgs: inlineArgs, startupPrompt: null, deferred: false };
+
+    const max = inlinePersonaCommandMax();
+    if (max <= 0) return { backendArgs: inlineArgs, startupPrompt: null, deferred: false };
+
+    const inlineCommand = buildAgentLaunchCommand(backend, inlineArgs, { env: opts.env || {} });
+    if (inlineCommand.length <= max) return { backendArgs: inlineArgs, startupPrompt: null, deferred: false };
+
+    return {
+        backendArgs,
+        startupPrompt: buildPersonaStartupMessage(personaText),
+        deferred: true,
+    };
+}
+
+function sleepSync(ms) {
+    if (ms > 0) spawnSync("sleep", [(ms / 1000).toFixed(3)]);
+}
+
+function computeStartupPasteSettleMs(byteLength) {
+    const scaled = STARTUP_PASTE_SETTLE_FLOOR_MS + Math.floor(byteLength / 1024) * STARTUP_PASTE_SETTLE_PER_KB_MS;
+    return Math.max(0, Math.min(STARTUP_PASTE_SETTLE_CEILING_MS, scaled));
+}
+
+function startupPastePlaceholderStillPresent(target) {
+    const r = tmux(["capture-pane", "-t", target, "-p", "-S", "-10"]);
+    if (r.status !== 0) return false;
+    return STARTUP_PASTE_PLACEHOLDER_PATTERN.test(r.stdout || "");
+}
+
+function pasteStartupPrompt(target, content) {
+    const buf = `a2a-start-${process.pid}-${Date.now()}-${Math.floor(Math.random()*0xffff).toString(16)}`;
+    const load = tmux(["load-buffer", "-b", buf, "-"], { input: content });
+    if (load.status !== 0) return { ok: false, error: `tmux load-buffer failed: ${(load.stderr||"").trim()||"unknown"}` };
+
+    const paste = tmux(["paste-buffer", "-p", "-d", "-b", buf, "-t", target]);
+    if (paste.status !== 0) {
+        tmux(["delete-buffer", "-b", buf]);
+        return { ok: false, error: `tmux paste-buffer failed: ${(paste.stderr||"").trim()||"unknown"}` };
+    }
+
+    sleepSync(computeStartupPasteSettleMs(Buffer.byteLength(content, "utf8")));
+    for (let attempt = 0; attempt < STARTUP_PASTE_MAX_ENTER_RETRIES; attempt++) {
+        const enter = tmux(["send-keys", "-t", target, "Enter"]);
+        if (enter.status !== 0) return { ok: false, error: `tmux send-keys failed: ${(enter.stderr||"").trim()||"unknown"}` };
+
+        const delay = Math.floor(STARTUP_PASTE_VERIFY_RETRY_DELAY_MS * Math.pow(1.5, attempt));
+        sleepSync(delay);
+        if (!startupPastePlaceholderStillPresent(target)) break;
+    }
+    return { ok: true };
 }
 
 function hasAnyFlag(args, names) {
@@ -689,6 +766,10 @@ async function sendNormalizedEnvelope(envelope) {
                     info(`${toId} restarted`);
                     await new Promise((r) => setTimeout(r, 500));
                     if (!tmuxSessionExists(toId)) info(`restart exited immediately for ${toId}, will attempt to send anyway`);
+                    else if (targetAgent.startupPrompt) {
+                        const pasted = pasteStartupPrompt(`${toId}:0.0`, targetAgent.startupPrompt);
+                        if (!pasted.ok) info(`startup prompt paste failed for ${toId}: ${pasted.error}`);
+                    }
                 } else {
                     info(`restart failed for ${toId}, will attempt to send anyway`);
                 }
@@ -805,12 +886,22 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
             info(`  warning: backend args will be recorded but won't apply to the running process`);
             info(`  to apply, restart: a2a kill ${name} && a2a start ${name} ${backendArgs.map(shellQuote).join(" ")}`);
         }
+        if (opts.startupPrompt) info(`  warning: startup prompt will be recorded but won't be pasted into the running process`);
     } else {
         const r = tmux(["new-session", "-d", "-s", name, "-c", cwd, buildAgentLaunchCommand(backend, backendArgs, { env })]);
         if (r.status !== 0) die(`tmux new-session failed: ${(r.stderr||"").trim()||"unknown"}`, 1);
         createdSession = true;
         spawnSync("sleep", ["1"]);
         ensureSessionSurvivedStart(name, backend);
+        if (opts.startupPrompt) {
+            const pasted = pasteStartupPrompt(target, opts.startupPrompt);
+            if (!pasted.ok) {
+                info(`startup prompt paste failed: ${pasted.error}`);
+                info(`killing orphan '${name}'`);
+                tmux(["kill-session", "-t", name]);
+                die(`startup prompt paste failed: ${pasted.error}`, 1);
+            }
+        }
     }
 
     try {
@@ -821,6 +912,7 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
             backend,
             backendArgs,
             backendEnv: env,
+            ...(opts.startupPrompt ? { startupPrompt: opts.startupPrompt } : {}),
             ...(opts.bridgeUrl ? { bridgeUrl: opts.bridgeUrl } : {}),
         });
         if (status !== 200 || !body?.success) throw new Error(body?.error || `HTTP ${status}`);
@@ -871,15 +963,25 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
         validateAgentId(char.name);
         const target = `${char.name}:0.0`;
         const prompt = readFileSync(char.fullPath, "utf8").trim();
-        const memberArgs = applyPersonaToBackendArgs(backend, backendArgs, composePersona(char.name, prompt, []));
+        const delivery = preparePersonaDelivery(backend, backendArgs, composePersona(char.name, prompt, []));
+        const memberArgs = delivery.backendArgs;
         if (!tmuxSessionExists(char.name)) {
             const r = tmux(["new-session", "-d", "-s", char.name, "-c", process.cwd(), buildAgentLaunchCommand(backend, memberArgs)]);
             if (r.status !== 0) { info(`  ${char.name}: FAILED: ${(r.stderr||"").trim()}`); continue; }
             spawnSync("sleep", ["1"]);
             if (!tmuxSessionExists(char.name)) { info(`  ${char.name}: FAILED: ${sessionStartupError(char.name, backend)}`); continue; }
+            if (delivery.startupPrompt) {
+                const pasted = pasteStartupPrompt(target, delivery.startupPrompt);
+                if (!pasted.ok) {
+                    info(`  ${char.name}: FAILED startup prompt paste: ${pasted.error}`);
+                    tmux(["kill-session", "-t", char.name]);
+                    continue;
+                }
+            }
             info(`  ${char.name}: spawned`);
         } else {
             info(`  ${char.name}: exists, re-registering`);
+            if (delivery.startupPrompt) info(`  ${char.name}: startup prompt recorded but not pasted into the running process`);
         }
         try {
             const { status, body } = await request("POST", "/api/a2a/register", {
@@ -887,6 +989,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
                 description: `group:${groupName}`, cwd: process.cwd(),
                 backend,
                 backendArgs: memberArgs,
+                ...(delivery.startupPrompt ? { startupPrompt: delivery.startupPrompt } : {}),
                 ...(opts.bridgeUrl ? { bridgeUrl: opts.bridgeUrl } : {}),
             });
             if (status !== 200 || !body?.success) { info(`  ${char.name}: FAILED register: ${body?.error||`HTTP ${status}`}`); continue; }
@@ -919,16 +1022,27 @@ async function startTeam(teamSpec, opts = {}) {
     for (const agent of teamSpec.agents) {
         validateAgentId(agent.id);
         requireBinary(BACKENDS[agent.backend] || "claude");
-        const launchArgs = applyPersonaToBackendArgs(agent.backend, translateCommonAgentSettings(agent), composePersona(agent.id, agent.rolePrompt, []));
+        const baseArgs = translateCommonAgentSettings(agent);
+        const delivery = preparePersonaDelivery(agent.backend, baseArgs, composePersona(agent.id, agent.rolePrompt, []), { env: agent.env });
+        const launchArgs = delivery.backendArgs;
         const target = `${agent.id}:0.0`;
         if (!tmuxSessionExists(agent.id)) {
             const r = tmux(["new-session", "-d", "-s", agent.id, "-c", agent.cwd, buildAgentLaunchCommand(agent.backend, launchArgs, { env: agent.env })]);
             if (r.status !== 0) { info(`  ${agent.id}: FAILED: ${(r.stderr||"").trim() || "tmux new-session failed"}`); continue; }
             spawnSync("sleep", ["1"]);
             if (!tmuxSessionExists(agent.id)) { info(`  ${agent.id}: FAILED: ${sessionStartupError(agent.id, agent.backend)}`); continue; }
+            if (delivery.startupPrompt) {
+                const pasted = pasteStartupPrompt(target, delivery.startupPrompt);
+                if (!pasted.ok) {
+                    info(`  ${agent.id}: FAILED startup prompt paste: ${pasted.error}`);
+                    tmux(["kill-session", "-t", agent.id]);
+                    continue;
+                }
+            }
             info(`  ${agent.id}: spawned (${agent.backend})`);
         } else {
             info(`  ${agent.id}: exists, re-registering`);
+            if (delivery.startupPrompt) info(`  ${agent.id}: startup prompt recorded but not pasted into the running process`);
         }
         try {
             const { status, body } = await request("POST", "/api/a2a/register", {
@@ -939,6 +1053,7 @@ async function startTeam(teamSpec, opts = {}) {
                 backend: agent.backend,
                 backendArgs: launchArgs,
                 backendEnv: agent.env,
+                ...(delivery.startupPrompt ? { startupPrompt: delivery.startupPrompt } : {}),
                 ...(opts.bridgeUrl ? { bridgeUrl: opts.bridgeUrl } : {}),
             });
             if (status !== 200 || !body?.success) { info(`  ${agent.id}: FAILED register: ${body?.error || `HTTP ${status}`}`); continue; }
@@ -988,8 +1103,9 @@ async function cmdStart(args) {
     if (personaText) {
         info(`persona: ${describePersona(promptText, skills)}`);
     }
-    const finalArgs = applyPersonaToBackendArgs(backend, backendArgs, personaText);
-    await startSingle(name, backend, finalArgs);
+    const delivery = preparePersonaDelivery(backend, backendArgs, personaText);
+    // if (delivery.deferred) info("persona too large for tmux launch; will paste startup prompt after session starts");
+    await startSingle(name, backend, delivery.backendArgs, { startupPrompt: delivery.startupPrompt });
 }
 
 async function cmdStartGlobal(args) {
@@ -1014,7 +1130,9 @@ async function cmdStartGlobal(args) {
     if (personaText) {
         info(`persona: ${describePersona(promptText, skills)}`);
     }
-    const filteredArgsWithPersona = applyPersonaToBackendArgs(backend, filteredBackendArgs, personaText);
+    
+    const delivery = preparePersonaDelivery(backend, filteredBackendArgs, personaText);
+    // if (delivery.deferred) info("persona too large for tmux launch; will paste startup prompt after session starts");
 
     async function resolveNgrok(localPort) {
         try { const u = await getNgrokUrl(); info("ngrok already running"); return u; }
@@ -1023,6 +1141,14 @@ async function cmdStartGlobal(args) {
             await startNgrok(localPort);
             return getNgrokUrl();
         }
+    }
+
+    function persistPublicUrl(url) {
+        if (!url) return;
+        const normalized = url.replace(/\/$/, "");
+        if (activeUrl() === normalized) return;
+        try { configSet("url", normalized); info(`saved public url to config: ${normalized}`); }
+        catch (err) { info(`could not save public url to config: ${err.message}`); }
     }
 
     if (urlFlag) {
@@ -1035,17 +1161,30 @@ async function cmdStartGlobal(args) {
         info(`remote bridge: ${remoteUrl}`); info(`replies route via: ${publicUrl}`);
         if (teamSpec) { await startTeam(teamSpec, { bridgeUrl: publicUrl, dashboard }); return; }
         if (isGroup(name)) { await startGroup(name, backend, filteredBackendArgs, { bridgeUrl: publicUrl, dashboard }); return; }
-        await startSingle(name, backend, filteredArgsWithPersona, { description: `a2a start-global: ${process.cwd()}`, bridgeUrl: publicUrl });
+        await startSingle(name, backend, delivery.backendArgs, {
+            description: `a2a start-global: ${process.cwd()}`,
+            bridgeUrl: publicUrl,
+            startupPrompt: delivery.startupPrompt,
+        });
         return;
     }
 
     requireBinary("ngrok");
     const port = portFlag || new URL(bridgeUrl()).port || "7742";
+    const storedUrl = activeUrl();
     const publicUrl = await resolveNgrok(port);
+    persistPublicUrl(publicUrl);
+    if (storedUrl && storedUrl !== publicUrl) {
+        info(`note: stored url (${storedUrl}) differs from live ngrok tunnel (${publicUrl}); using live tunnel`);
+    }
     info(`bridge exposed at: ${publicUrl}`); info(""); info("share with peers:"); info(`  a2a start-global --url=${publicUrl}`); info("");
     if (teamSpec) { await startTeam(teamSpec, { bridgeUrl: publicUrl, dashboard }); return; }
     if (isGroup(name)) { await startGroup(name, backend, filteredBackendArgs, { bridgeUrl: publicUrl, dashboard }); return; }
-    await startSingle(name, backend, filteredArgsWithPersona);
+    await startSingle(name, backend, delivery.backendArgs, {
+        description: `a2a start-global: ${process.cwd()}`,
+        bridgeUrl: publicUrl,
+        startupPrompt: delivery.startupPrompt,
+    });
 }
 
 async function killOne(id) {
@@ -1237,6 +1376,7 @@ async function cmdReconnect(args) {
             ...(current?.backend ? { backend: current.backend } : {}),
             ...(Array.isArray(current?.backendArgs) ? { backendArgs: current.backendArgs } : {}),
             ...(current?.backendEnv && typeof current.backendEnv === "object" ? { backendEnv: current.backendEnv } : {}),
+            ...(typeof current?.startupPrompt === "string" ? { startupPrompt: current.startupPrompt } : {}),
         };
         try {
             const { status, body } = await request("POST", "/api/a2a/register", payload);

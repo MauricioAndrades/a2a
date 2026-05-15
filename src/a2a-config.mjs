@@ -14,6 +14,7 @@ const DEFAULT_LOG_FILE = join(SKILL_DIR, "messages.log");
 const CONFIG_DEFAULTS = {
     port: 7742,
     host: "127.0.0.1",
+    url:  null,
     key:  null,
     peers: {},
     log: {
@@ -29,7 +30,7 @@ const REGISTRY_DEFAULTS = {
     groups: [],
 };
 
-const USER_KEYS = ["port", "host", "key", "log.mode", "log.path", "log.maxBytes", "log.redactRemote"];
+const USER_KEYS = ["port", "host", "url", "key", "log.mode", "log.path", "log.maxBytes", "log.redactRemote"];
 
 function ensureDirs() {
     mkdirSync(SKILL_DIR, { recursive: true });
@@ -97,7 +98,24 @@ export function configSet(key, value) {
     }
     if (key === "host") {
         if (typeof value !== "string" || value.trim() === "") throw new Error("host must be a non-empty string");
-        coerced = value.trim();
+        const trimmed = value.trim();
+        if (trimmed.includes("://") || trimmed.includes("/")) {
+            throw new Error("host must be a bare hostname or IP (no scheme, no path). did you mean `a2a config set url`?");
+        }
+        coerced = trimmed;
+    }
+    if (key === "url") {
+        if (value === "" || value === null) { coerced = null; }
+        else {
+            if (typeof value !== "string") throw new Error("url must be a string");
+            let parsed;
+            try { parsed = new URL(value.trim()); }
+            catch { throw new Error("url must be a valid URL (e.g. https://example.ngrok-free.dev)"); }
+            if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+                throw new Error("url must use http:// or https://");
+            }
+            coerced = value.trim().replace(/\/$/, "");
+        }
     }
     if (key === "key" && (value === "" || value === null)) coerced = null;
     if (key === "log.mode") {
@@ -134,6 +152,20 @@ export function activePort() {
 
 export function activeHost() {
     return process.env.A2A_HOST || loadConfig().host || "127.0.0.1";
+}
+
+/**
+ * The bridge's public, ngrok-exposed URL. This is the address peers POST to
+ * when calling you from another machine. Stored in config so `start-global`
+ * and peer-share flows don't have to re-query the ngrok API every time.
+ *
+ * Returns null when no public URL has been persisted.
+ */
+export function activeUrl() {
+    const env = (process.env.A2A_PUBLIC_URL || "").trim();
+    if (env) return env.replace(/\/$/, "");
+    const cfg = loadConfig().url;
+    return cfg ? String(cfg).replace(/\/$/, "") : null;
 }
 
 export function bridgeUrl() {

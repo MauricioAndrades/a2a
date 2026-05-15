@@ -50,7 +50,7 @@ The installer does not edit `~/.claude/settings.json`, append to `~/.claude/CLAU
 
 Environment: **`A2A_SETUP_YES=1`** or **`CI=1`** also enables non-interactive mode for `node scripts/install.mjs`.
 
-Spawned agents do not depend on hooks for a2a awareness. `a2a start` and `a2a start-global` inject a short instruction telling every single agent, group member, and team agent to read the `a2a` skill from `~/.claude/skills/a2a/SKILL.md`, falling back to the package copy, before answering its first user message. The agent name is also passed as a lightweight persona seed, so names such as `drill-instructor`, `sammy-sosa`, or `bug-surgeon` can shape voice and working style. Additional `--prompt`, `--prompt-file`, or `--skill` content is layered after that instruction and takes priority.
+Spawned agents do not depend on hooks for a2a awareness. `a2a start` and `a2a start-global` inject a short instruction telling every single agent, group member, and team agent to read the `a2a` skill from `~/.claude/skills/a2a/SKILL.md`, falling back to the package copy, before answering its first user message. The agent name is also passed as a lightweight persona seed, so names such as `drill-instructor`, `sammy-sosa`, or `bug-surgeon` can shape voice and working style. Additional `--prompt`, `--prompt-file`, or `--skill` content is layered after that instruction and takes priority. If the composed persona would make the tmux launch command too large, `a2a` now starts the backend with the small command first, then pastes the full startup brief into the fresh pane and presses Enter.
 
 ## Quick start
 
@@ -135,7 +135,7 @@ The server exposes four HTTP endpoints on the base URL where the bridge is liste
 
 | Method   | Path                    | Description                                                                                                                  |
 | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/api/a2a/register`     | Register an agent (`{agentId, tmuxTarget, cwd?, description?, bridgeUrl?}`)                                                  |
+| `POST`   | `/api/a2a/register`     | Register an agent (`{agentId, tmuxTarget, cwd?, description?, bridgeUrl?, backend?, backendArgs?, backendEnv?, startupPrompt?}`) |
 | `DELETE` | `/api/a2a/register/:id` | Unregister an agent                                                                                                          |
 | `GET`    | `/api/a2a/agents`       | List all registered agents                                                                                                   |
 | `POST`   | `/api/a2a/send`         | Send a message (`{to, from, origin, body, action?, replyTo?}` — `action` is `message`, `reply`, or `ask`, default `message`) |
@@ -175,12 +175,12 @@ a2a config set log.redactRemote true
 1. The **bridge server** is a plain Node.js HTTP server with an in-memory agent registry
 2. Agents **register** with a name and tmux pane target (e.g., `alice:0.0`)
 3. When agent A sends a message to agent B, the bridge:
-   - Wraps the message in an `<a2a_message>` XML envelope with the body inside `<![CDATA[...]]>`
+   - Wraps the message in an `<a2a_message>` XML envelope with XML-escaped body text
    - Uses `tmux load-buffer` + `tmux paste-buffer` to inject it into B's terminal
    - Sends `tmux send-keys Enter` so Claude processes it as a new user turn
 4. For **remote agents** (registered with a `bridgeUrl`), the bridge proxies the send request to the remote bridge over HTTP instead of using tmux locally
 
-Startup is defensive about session lifecycle. If a backend exits during startup, `a2a` now fails the command instead of registering a dead peer. In non-interactive shells, `a2a start` leaves the tmux session detached and prints `peek`/`attach` instructions instead of failing on `tmux attach`.
+Startup is defensive about session lifecycle. If a backend exits during startup, `a2a` now fails the command instead of registering a dead peer. In non-interactive shells, `a2a start` leaves the tmux session detached and prints `peek`/`attach` instructions instead of failing on `tmux attach`. Large startup briefs are pasted after the pane is created to avoid tmux command-length limits; set `A2A_INLINE_PERSONA_COMMAND_MAX=0` to force inline persona injection for debugging.
 
 If the bridge restarts, its registry starts empty again. `a2a reconnect` repairs that by re-registering live tmux sessions, using cached agent names when available and falling back to live sessions. `a2a reconnect --all --dashboard` also rebuilds an `a2a-view` tmux session that links each live agent window into a single operator view.
 
