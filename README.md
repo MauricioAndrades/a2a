@@ -1,10 +1,10 @@
 # a2a
 
-> run an engineering organization in tmux.
+![a2a multi-agent runtime](./image.png)
 
-`a2a` is a local-first multi-agent coordination runtime for coding agents.
+`a2a` is a multi-agent/multi-cli coordination runtime for coding agents.
 
-it lets claude, codex, gemini, and cursor agents:
+it lets claude, codex, gemini, and cursor:
 - talk to each other
 - delegate work
 - coordinate investigations
@@ -14,36 +14,6 @@ it lets claude, codex, gemini, and cursor agents:
 - collaborate across machines
 - persist as long-running operator processes
 
-all from the terminal.
-
-not simulated agents.
-not browser tabs.
-not orchestration theater.
-
-real persistent sessions with identities, transport, routing, recovery, and collaboration.
-
----
-
-## what this actually is
-
-most agent tooling today treats agents like disposable prompts.
-
-`a2a` treats them like operators.
-
-each agent:
-- has an identity
-- lives inside a real tmux session
-- maintains persistent context
-- can communicate with peers
-- can coordinate asynchronously
-- can survive bridge restarts
-- can be inspected at any time
-- can participate in teams and remote topologies
-
-the result feels less like "chatting with ai"
-and more like supervising a distributed engineering team.
-
----
 
 ## quick example
 
@@ -56,16 +26,9 @@ a2a bridge start
 spawn a few specialists:
 
 ```bash
-a2a start scout --prompt "investigate the auth regression"
-a2a start fixer --codex --prompt "implement safe fixes only"
-a2a start reviewer --prompt "review every change for regressions"
+a2a start drill-seargant --prompt "hell week is here and no one is doing enough ever, go psycho on these guys and make them fix the bug in the src folder. Whoever does the better jobs stays, the other DIES, start two a2a cursor-agents and go psycho on them once a min every minute"
 ```
 
-coordinate them:
-
-```bash
-a2a --scout "ask fixer whether middleware ordering changed recently"
-```
 
 the message lands directly inside the target agent's terminal:
 
@@ -81,18 +44,6 @@ reply naturally from the other side:
 a2a --reply --scout "confirmed. auth middleware now runs before session hydration."
 ```
 
----
-
-## why it feels different
-
-most "multi-agent" systems are:
-- centralized
-- opaque
-- browser-first
-- heavily abstracted
-- impossible to debug
-- fake autonomy wrapped around hidden prompts
-
 `a2a` is:
 - terminal-native
 - inspectable
@@ -101,21 +52,7 @@ most "multi-agent" systems are:
 - transport-simple
 - operationally transparent
 
-agents are just tmux sessions.
-
-the bridge is just a small http server.
-
-messages are structured envelopes pasted directly into terminals.
-
-everything stays visible.
-
 ---
-
-## the important part
-
-the interesting thing is not messaging.
-
-the interesting thing is persistent coordination.
 
 agents can:
 - ask peers to verify hypotheses
@@ -147,58 +84,17 @@ the runtime preserves:
 
 ---
 
-## real runtime behavior
-
-`a2a` is not a toy wrapper around tmux.
-
-the runtime handles:
-- per-target delivery locking
-- bracketed paste synchronization
-- startup paste stabilization
-- enter-key retry verification
-- reconnect semantics
-- bridge recovery
-- peer authentication
-- remote routing
-- operator authorization
-- dashboard reconstruction
-- backend normalization
-- deferred persona injection
-- multi-backend orchestration
-
-it was built to survive real agent workflows, not screenshots.
-
----
-
 ## start a swarm
 
 ```bash
-a2a start researcher
-a2a start tester
-a2a start planner
-a2a start implementer
-a2a start reviewer
+a2a start bug-killers
 ```
 
 then:
 
 ```bash
-a2a --planner "coordinate the others and produce a fix plan"
+a2a --write "kill the bugs or i kill you get what i am saying?"
 ```
-
-or:
-
-```bash
-a2a --researcher "ask reviewer whether the migration path is safe"
-```
-
-or:
-
-```bash
-a2a --implementer --reviewer "sync on the wire format before patching"
-```
-
----
 
 ## teams
 
@@ -272,14 +168,6 @@ remote agents can:
 - collaborate
 - reply through the same bridge
 
-same protocol.
-same envelopes.
-same runtime model.
-
-local and remote agents become indistinguishable from the messaging surface.
-
----
-
 ## tmux-native by design
 
 agents are not hidden behind a web app.
@@ -303,14 +191,6 @@ rebuild dashboards after reconnect:
 ```bash
 a2a reconnect --all --dashboard
 ```
-
-because the runtime is tmux-native:
-- sessions survive bridge restarts
-- sessions remain inspectable
-- orchestration stays debuggable
-- everything composes with normal shell tooling
-
----
 
 ## mcp channel
 

@@ -99,7 +99,7 @@ async function deliverOnce(target, content) {
     // Wait for the receiving TUI to process the bracketed-paste end marker and render its
     // placeholder before we send Enter. Without this the Enter races the placeholder commit
     // and gets absorbed into the paste, leaving the message sitting unsubmitted.
-    await sleep(computeSettleMs(content.length));
+    await sleep(computeSettleMs(Buffer.byteLength(content, "utf8")));
 
     // Send Enter and verify it took effect. If the placeholder is still visible after the
     // delay, the Enter landed before the TUI committed the paste -- send it again. Retry up
@@ -117,7 +117,7 @@ async function deliverOnce(target, content) {
         if (!placeholderStillPresent(target)) break;
     }
 
-    return { ok: true, bytes: content.length };
+    return { ok: true, bytes: Buffer.byteLength(content, "utf8") };
 }
 
 function checkAuth(req) {
