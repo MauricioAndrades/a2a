@@ -6,7 +6,8 @@ import { request as httpsRequest } from "https";
 import { spawnSync } from "child_process";
 import { activePort, activeHost, activeKey, writePid, removePid, loadConfig, peerKeyForUrl, appendMessageLog } from "./a2a-config.mjs";
 import { wrapEnvelope } from "./server/envelope.mjs";
-import { authFromRequest, configuredPeerUrl } from "./server/auth.mjs";
+import { authFromRequest, configuredPeerUrl, isTrustedBrowserLoopbackHostname } from "./server/auth.mjs";
+import { readJsonBody } from "./server/read-json-body.mjs";
 
 process.title = "a2a-bridge";
 
@@ -16,21 +17,6 @@ const HOST = activeHost();
 const registry = new Map();
 
 const MAX_BODY = 1024 * 1024; // 1 MB
-
-function readJsonBody(req) {
-    return new Promise((resolve, reject) => {
-        let raw = "";
-        req.on("data", (c) => {
-            raw += c.toString();
-            if (raw.length > MAX_BODY) {
-                req.destroy();
-                reject(new Error("request body too large"));
-            }
-        });
-        req.on("end", () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); } });
-        req.on("error", reject);
-    });
-}
 
 function ok(res, data, status = 200) {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -160,7 +146,7 @@ async function handleA2ARoutes(method, path, req, res, auth) {
 
     if (method === "POST" && path === "/api/a2a/register") {
         try {
-            const body = await readJsonBody(req);
+            const body = await readJsonBody(req, MAX_BODY);
             if (!body.agentId || !body.tmuxTarget) { fail(res, 400, "agentId and tmuxTarget are required"); return true; }
             const local = auth.kind === "operator" || (auth.kind === "local-open" && auth.loopback);
             const peer = auth.kind === "peer" && auth.peer === body.agentId;
@@ -208,7 +194,7 @@ async function handleA2ARoutes(method, path, req, res, auth) {
     if (method === "POST" && path === "/api/a2a/send") {
         let body = null;
         try {
-            body = await readJsonBody(req);
+            body = await readJsonBody(req, MAX_BODY);
             if (!body.to || !body.from || !body.origin || typeof body.body !== "string") {
                 fail(res, 400, "to, from, origin, body are required");
                 appendMessageLog({ from: body?.from || "?", to: body?.to || "?", action: body?.action, origin: body?.origin || "?", body: body?.body, ok: false, error: "missing required field (to/from/origin/body)" });
@@ -256,7 +242,7 @@ async function handleRequest(req, res) {
     if (origin) {
         try {
             const u = new URL(origin);
-            if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") { fail(res, 403, "origin not allowed"); return; }
+            if (!isTrustedBrowserLoopbackHostname(u.hostname)) { fail(res, 403, "origin not allowed"); return; }
         } catch { fail(res, 403, "invalid origin"); return; }
         res.setHeader("Access-Control-Allow-Origin", origin);
     }

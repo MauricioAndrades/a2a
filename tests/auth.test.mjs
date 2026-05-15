@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { authFromRequest, configuredPeerUrl, isLoopbackAddress } from "../src/server/auth.mjs";
+import { authFromRequest, configuredPeerUrl, isLoopbackAddress, isTrustedBrowserLoopbackHostname } from "../src/server/auth.mjs";
 import { channelStartupProblem, parseAllowedSenders } from "../src/channel/auth.mjs";
 
 function req({ address = "127.0.0.1", authorization = "" } = {}) {
@@ -35,6 +35,14 @@ test("configuredPeerUrl normalizes trailing slash", () => {
 
 test("loopback matcher includes IPv4-mapped loopback", () => {
     assert.equal(isLoopbackAddress("::ffff:127.0.0.1"), true);
+});
+
+test("trusted CORS hostnames accept IPv6 loopback literals from Origin URLs", () => {
+    assert.equal(isTrustedBrowserLoopbackHostname("[::1]"), true);
+    assert.equal(isTrustedBrowserLoopbackHostname("::1"), true);
+    assert.equal(isTrustedBrowserLoopbackHostname("127.0.0.1"), true);
+    assert.equal(isTrustedBrowserLoopbackHostname("LOCALHOST"), true);
+    assert.equal(isTrustedBrowserLoopbackHostname("192.168.1.2"), false);
 });
 
 test("channel non-loopback startup requires sender allowlist and key", () => {

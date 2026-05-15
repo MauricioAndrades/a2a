@@ -2,6 +2,19 @@ export function isLoopbackAddress(address) {
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
+/**
+ * True when `origin` parses to an http(s) URL whose hostname is loopback-safe for CORS
+ * mirrors (matches local-open peer traffic). WHATWG preserves IPv6 literals with brackets:
+ * hostname is `[::1]`, never bare `::1`.
+ */
+export function isTrustedBrowserLoopbackHostname(hostname) {
+    if (!hostname || typeof hostname !== "string") return false;
+    const lc = hostname.toLowerCase();
+    if (lc === "127.0.0.1" || lc === "localhost") return true;
+    const bare = lc.startsWith("[") && lc.endsWith("]") ? lc.slice(1, -1) : lc;
+    return bare === "::1" || bare === "0:0:0:0:0:0:0:1";
+}
+
 export function authFromRequest(req, cfg) {
     const loopback = isLoopbackAddress(req.socket?.remoteAddress || "");
     if (!cfg.key && !Object.keys(cfg.peers||{}).length) {

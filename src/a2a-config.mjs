@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, appendFileSync } from "fs";
-import { join } from "path";
+import { join, relative, resolve, sep } from "path";
 import { homedir } from "os";
 
 const SKILL_DIR   = join(homedir(), ".claude", "skills", "a2a");
@@ -187,8 +187,27 @@ export function removePid() {
     try { unlinkSync(PID_FILE); } catch { /* best effort */ }
 }
 
+/** Single segment only: no slashes, no ".." escapes; aligns with ~/.claude/skills/a2a/groups/<name>/ */
+const SAFE_GROUP_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+function resolvedTrustedGroupDirectory(name) {
+    if (name == null || typeof name !== "string") return null;
+    const trimmed = name.trim();
+    if (trimmed === "" || trimmed === "." || trimmed === "..") return null;
+    if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) return null;
+    if (!SAFE_GROUP_SEGMENT.test(trimmed)) return null;
+
+    const abs = resolve(join(GROUPS_DIR, trimmed));
+    const root = resolve(GROUPS_DIR);
+    const rel = relative(root, abs);
+    if (rel === "" || rel.split(sep).includes("..")) return null;
+    return abs;
+}
+
 export function isGroup(name) {
-    try { return statSync(join(GROUPS_DIR, name)).isDirectory(); } catch { return false; }
+    const dir = resolvedTrustedGroupDirectory(name);
+    if (dir == null) return false;
+    try { return statSync(dir).isDirectory(); } catch { return false; }
 }
 
 export function listGroupNames() {
@@ -200,13 +219,15 @@ export function listGroupNames() {
 }
 
 export function listGroupMembers(groupName) {
+    const dir = resolvedTrustedGroupDirectory(groupName);
+    if (dir == null) return [];
     try {
-        return readdirSync(join(GROUPS_DIR, groupName))
+        return readdirSync(dir)
             .filter((f) => f.endsWith(".md"))
             .sort()
             .map((f) => ({
                 name: f.replace(/\.md$/, "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "agent",
-                fullPath: join(GROUPS_DIR, groupName, f),
+                fullPath: join(dir, f),
             }));
     } catch { return []; }
 }
@@ -269,6 +290,50 @@ export function messageLogRedactRemote() {
 }
 
 /**
+ * Last maxBytes bytes of the log chunk, stripping any leading orphaned UTF-8
+ * continuation bytes and skipping any partial leading row so retention starts
+ * at a header line `[YYYY-MM-DDThh:mm:ss...]`.
+ *
+ * Exported for tests.
+ */
+export function truncateRotatedMessageLogTail(buf, maxBytes) {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+    if (b.length <= maxBytes) return Buffer.from(b);
+    let chunk = b.subarray(b.length - maxBytes);
+    let strip = 0;
+    while (strip < chunk.length && (chunk[strip] & 0xc0) === 0x80) strip++;
+    chunk = chunk.subarray(strip);
+    const atZero = isoLogHeaderStartsAt(chunk, 0, true);
+    if (atZero !== null) return chunk.subarray(atZero);
+    for (let i = 1; i + 12 <= chunk.length; i++) {
+        if (chunk[i - 1] !== 0x0a || chunk[i] !== 0x5b) continue;
+        const h = isoLogHeaderStartsAt(chunk, i, false);
+        if (h !== null) return chunk.subarray(h);
+    }
+    return chunk;
+}
+
+function isoLogHeaderStartsAt(buf, bracketIdx, atChunkStart) {
+    const need = bracketIdx + 11;
+    if (need >= buf.length) return null;
+    if (!atChunkStart && bracketIdx !== 0 && buf[bracketIdx - 1] !== 0x0a) return null;
+    if (buf[bracketIdx] !== 0x5b /* [ */) return null;
+    const i = bracketIdx + 1;
+    if (!(buf[i] >= 0x30 && buf[i] <= 0x39)) return null;
+    if (!(buf[i + 1] >= 0x30 && buf[i + 1] <= 0x39)) return null;
+    if (!(buf[i + 2] >= 0x30 && buf[i + 2] <= 0x39)) return null;
+    if (!(buf[i + 3] >= 0x30 && buf[i + 3] <= 0x39)) return null;
+    if (buf[i + 4] !== 0x2d) return null;
+    if (!(buf[i + 5] >= 0x30 && buf[i + 5] <= 0x39)) return null;
+    if (!(buf[i + 6] >= 0x30 && buf[i + 6] <= 0x39)) return null;
+    if (buf[i + 7] !== 0x2d) return null;
+    if (!(buf[i + 8] >= 0x30 && buf[i + 8] <= 0x39)) return null;
+    if (!(buf[i + 9] >= 0x30 && buf[i + 9] <= 0x39)) return null;
+    if (buf[i + 10] !== 0x54 /* T */) return null;
+    return bracketIdx;
+}
+
+/**
  * Append a single message event to the chatter log. Best effort: never throws,
  * never blocks delivery. Format is human-readable multi-line:
  *
@@ -303,7 +368,7 @@ export function appendMessageLog(entry) {
             const size = statSync(logPath).size;
             if (size > maxBytes) {
                 const raw = readFileSync(logPath);
-                writeFileSync(logPath, raw.slice(-maxBytes), { mode: 0o644 });
+                writeFileSync(logPath, truncateRotatedMessageLogTail(raw, maxBytes), { mode: 0o644 });
             }
         }
     } catch { /* best effort -- never fail a delivery because of logging */ }

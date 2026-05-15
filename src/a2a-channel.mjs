@@ -29,6 +29,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { bearerToken, channelStartupProblem, isLoopbackHost, parseAllowedSenders } from "./channel/auth.mjs";
+import { readTextBody } from "./channel/read-text-body.mjs";
 
 const PORT = Number.parseInt(process.env.A2A_CHANNEL_PORT || "8788", 10) || 8788;
 const HOST = process.env.A2A_CHANNEL_HOST || "127.0.0.1";
@@ -185,7 +186,14 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-        const body = await readTextBody(req);
+        let body;
+        try {
+            body = await readTextBody(req);
+        } catch (err) {
+            res.writeHead(err.message === "body too large" ? 413 : 400, { "Content-Type": "text/plain" });
+            res.end(err.message || "bad request");
+            return;
+        }
         const sender = (req.headers["x-sender"] || "").toString();
         if (!allowed.has(sender)) {
             res.writeHead(403, { "Content-Type": "text/plain" });
@@ -244,22 +252,3 @@ httpServer.listen(PORT, HOST, () => {
     const auth = remoteAuthRequired ? "bearer auth required" : "loopback";
     sseSend(`a2a-channel listening on http://${HOST}:${PORT} (X-Sender allowlist: ${senders}; ${auth})`);
 });
-
-/**
- * @param {import("http").IncomingMessage} req
- * @returns {Promise<string>}
- */
-function readTextBody(req) {
-    return new Promise((resolve, reject) => {
-        let raw = "";
-        req.on("data", (c) => {
-            raw += c.toString();
-            if (raw.length > 2 * 1024 * 1024) {
-                req.destroy();
-                reject(new Error("body too large"));
-            }
-        });
-        req.on("end", () => resolve(raw));
-        req.on("error", reject);
-    });
-}
