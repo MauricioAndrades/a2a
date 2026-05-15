@@ -471,7 +471,7 @@ async function installWelcomeDoc() {
 }
 
 async function installGroups() {
-  const src = path.join(SCRIPT_DIR, "groups", "star-wars");
+  const src = path.join(SCRIPT_DIR, "teams", "star-wars");
   const dest = path.join(INSTALLED_GROUPS_DIR, "star-wars");
 
   explain([
