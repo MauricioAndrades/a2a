@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "a2a config",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["port", "host"],
+  "properties": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 7742
+    },
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1"
+    },
+    "url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "default": null
+    },
+    "key": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "global": {
+      "type": "boolean",
+      "default": false
+    },
+    "protocol": {
+      "type": "string",
+      "enum": ["tmux", "iterm"],
+      "default": "tmux"
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {
+        "mode": "on",
+        "path": "messages.log",
+        "maxBytes": 0,
+        "redactRemote": false
+      },
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["on", "off"],
+          "default": "on"
+        },
+        "path": {
+          "type": ["string", "null"],
+          "default": "messages.log",
+          "description": "Message log location. A leading ~/ expands to the user's home directory; relative paths resolve against the a2a install root (so the default resolves to <install-root>/messages.log, matching the code default). null disables the custom path and uses the default."
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "redactRemote": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "peers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "key"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "key": { "type": "string" }
+        }
+      },
+      "default": {}
+    }
+  }
+}

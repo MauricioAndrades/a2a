@@ -1,0 +1,63 @@
+{
+  "name": "a2a",
+  "version": "1.1.0",
+  "description": "communications for agents",
+  "type": "module",
+  "bin": {
+    "a2a": "./bin/a2a.mjs",
+    "a2a-server": "./src/a2a-server.mjs",
+    "a2a-channel": "./src/a2a-channel.mjs"
+  },
+  "scripts": {
+    "start": "node src/a2a-server.mjs",
+    "channel": "node src/a2a-channel.mjs",
+    "setup": "node scripts/install.mjs",
+    "bootstrap": "node scripts/install.mjs --yes",
+    "postinstall": "node scripts/postinstall-hint.mjs",
+    "test": "vitest run",
+    "test:vitest": "vitest run",
+    "test:vitest:argv": "vitest run tests/a2a-argv-vitest.test.mjs",
+    "test:vitest:channel": "vitest run tests/a2a-channel-vitest.test.mjs",
+    "test:vitest:cli": "vitest run tests/cli-vitest.test.mjs",
+    "test:vitest:config": "vitest run tests/a2a-config-vitest.test.mjs",
+    "test:vitest:server": "vitest run tests/a2a-server-vitest.test.mjs",
+    "test:vitest:team-spec": "vitest run tests/a2a-team-spec-vitest.test.mjs",
+    "test:vitest:tokens": "vitest run tests/a2a-tokens-vitest.test.mjs",
+    "lint": "eslint src tests scripts bin",
+    "lint:fix": "eslint src tests scripts bin --fix"
+  },
+  "keywords": [
+    "claude",
+    "a2a",
+    "agent",
+    "bridge",
+    "tmux"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.24.1"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "teams",
+    "schemas",
+    "scripts",
+    "docs",
+    "completions",
+    "install"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.0",
+    "eslint-plugin-n": "^18.0.1",
+    "globals": "^17.6.0",
+    "vitest": "^4.1.7"
+  }
+}

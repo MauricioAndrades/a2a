@@ -1,0 +1,46 @@
+# Project directories
+.archive
+.claude
+.mcp.*
+teams/dw-bug-killers
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Runtime
+*.pid
+*.log
+
+# Build/Dist
+dist/
+build/
+
+# Go build artifacts
+cmd/a2a-dashboard/a2a-dashboard
+cmd/a2a-input-probe/a2a-input-probe
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Testing
+coverage/
+.vitest/
+
+# Project-specific
+config.json
+registry.json
+archive/

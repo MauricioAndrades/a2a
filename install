@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# One-command a2a install.
+#
+#   cd a2a && ./install
+#
+# Everything happens automatically, in this order:
+#   1. npm dependencies (the CLI cannot even start without them)
+#   2. `a2a` + `a2a-server` linked into a PATH directory
+#   3. the a2a and a2a-team-harness Claude skills into ~/.claude/skills
+#   4. welcome doc + sample group + sample team
+#   5. a bridge operator key (required by `a2a start --global`)
+#   6. ngrok: installed if missing, then authenticated
+#   7. the bin dir appended to your shell profile
+#   8. `a2a help` executed, to prove the install actually works
+#
+# Options are passed straight through to scripts/install.mjs:
+#   ./install --help            list every option
+#   ./install --no-ngrok        skip ngrok setup
+#   ./install --verify-tunnel   open a real tunnel to prove ngrok works
+#
+# Exits non-zero if the finished install is not usable.
+set -e
+
+# Resolve the repo root from $0 so the script works from any cwd. CDPATH is
+# cleared because a set CDPATH makes `cd` print and can resolve elsewhere.
+CDPATH='' cd "$(dirname "$0")"
+SCRIPT_DIR="$(pwd -P)"
+cd "$SCRIPT_DIR"
+
+red() { printf '\033[0;31m%s\033[0m\n' "$1" >&2; }
+
+if ! command -v node >/dev/null 2>&1; then
+  red "a2a install: node was not found on your PATH"
+  echo "a2a needs Node.js 18 or newer: https://nodejs.org/en/download" >&2
+  if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    echo "on this machine you can run:  brew install node" >&2
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "on this machine you can run:  sudo apt-get install -y nodejs npm" >&2
+  fi
+  exit 1
+fi
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  red "a2a install: Node.js 18 or newer is required, found $(node --version)"
+  exit 1
+fi
+
+# --yes suppresses the per-step y/N confirmations. It does NOT suppress the one
+# unavoidable question: if ngrok has no authtoken, the installer asks for it,
+# because an authtoken is a per-account secret that cannot be generated locally.
+exec node "$SCRIPT_DIR/scripts/install.mjs" --yes "$@"

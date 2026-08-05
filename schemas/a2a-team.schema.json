@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/a2a/schemas/a2a-team.schema.json",
+  "title": "a2a team spec",
+  "description": "A multi-agent a2a team: shared defaults plus a map of named agents launched by `a2a start --team-file`.",
+  "type": "object",
+  "required": ["agents"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [1, 2],
+      "default": 2,
+      "description": "Team spec schema version. Version 2 makes unattended (yolo) mode the default for all agents unless a per-agent or defaults `yolo` overrides it."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+      "description": "Team name (tmux session name, kill target, bridge description tag). Defaults to the spec filename if omitted."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable summary of what this team does. Shown in team listings."
+    },
+    "dashboard": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, launch the team with the dashboard TUI view."
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Values inherited by every agent unless the agent overrides them. `role`/`role_file` here are prepended to each agent's own role.",
+      "additionalProperties": false,
+      "properties": {
+        "backend": { "$ref": "#/$defs/backend" },
+        "model": { "$ref": "#/$defs/model" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "role": { "$ref": "#/$defs/role" },
+        "role_file": { "$ref": "#/$defs/role_file" },
+        "env": { "$ref": "#/$defs/env" },
+        "args": { "$ref": "#/$defs/args" },
+        "approval": { "$ref": "#/$defs/approval" },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
+        "yolo": { "$ref": "#/$defs/yolo" },
+        "skill": {
+          "description": "Optional skill hint(s) recorded on the team defaults (informational; not consumed by the launcher).",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        }
+      },
+      "not": {
+        "required": ["role", "role_file"]
+      }
+    },
+    "agents": {
+      "description": "The agents in this team. Map of agent-id -> agent config (preferred), or an array of agent objects each with an `id`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/agent" },
+          "propertyNames": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [
+              { "$ref": "#/$defs/agent" },
+              { "required": ["id"] }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "backend": {
+      "type": "string",
+      "enum": ["claude", "codex", "cursor-agent", "gemini"],
+      "default": "claude",
+      "description": "CLI backend that runs this agent."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the agent. Relative paths resolve against the launch directory; absolute paths are allowed (e.g. pointing agents at a sibling repo)."
+    },
+    "role": {
+      "type": "string",
+      "description": "Inline role/system prompt for the agent. Mutually exclusive with `role_file`."
+    },
+    "role_file": {
+      "type": "string",
+      "description": "Path (relative to the spec file) to a file whose contents become the agent's role prompt. Mutually exclusive with `role`."
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment variables for the agent process. Merged over the team defaults' env.",
+      "additionalProperties": { "type": "string" }
+    },
+    "args": {
+      "type": "string",
+      "description": "Extra CLI arguments appended to the backend invocation."
+    },
+    "yolo": {
+      "type": "boolean",
+      "description": "Unattended mode: run without approval prompts. Explicit true/false always wins over the version-2 default. Resolution order: per-agent -> defaults -> (version >= 2 ? true : false)."
+    },
+    "agent": {
+      "type": "object",
+      "description": "A single agent. Inherits unset fields from `defaults`.",
+      "additionalProperties": false,
+      "properties": {
+        "backend": { "$ref": "#/$defs/backend" },
+        "model": { "$ref": "#/$defs/model" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "role": { "$ref": "#/$defs/role" },
+        "role_file": { "$ref": "#/$defs/role_file" },
+        "env": { "$ref": "#/$defs/env" },
+        "args": { "$ref": "#/$defs/args" },
+        "approval": { "$ref": "#/$defs/approval" },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
+        "yolo": { "$ref": "#/$defs/yolo" }
+      },
+      "not": {
+        "required": ["role", "role_file"]
+      }
+    }
+  }
+}
