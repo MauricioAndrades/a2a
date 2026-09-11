@@ -22,12 +22,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y tmux
           npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps
-      - name: Preserve Linux verification dependencies
-        run: tar -czf "$RUNNER_TEMP/a2a-linux-test-dependencies.tar.gz" node_modules
+      - name: Preserve native tmux for offline verification
+        run: tar -czf "$RUNNER_TEMP/a2a-native-tmux.tar.gz" -C /usr/bin tmux
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: a2a-linux-test-dependencies
-          path: ${{ runner.temp }}/a2a-linux-test-dependencies.tar.gz
+          name: a2a-native-tmux
+          path: ${{ runner.temp }}/a2a-native-tmux.tar.gz
           retention-days: 1
       - name: Native Vitest
         run: npm test -- --reporter=verbose
