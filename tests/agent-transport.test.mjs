@@ -100,3 +100,37 @@ describe("isAgentSessionAlive", () => {
     ).resolves.toBe(true);
   });
 });
+
+
+test("live tmux-only agents do not probe iTerm", async () => {
+  let pings = 0;
+  const alive = await isAgentSessionAlive({ agentId: "alpha" }, {
+    tmuxSessionAlive: () => true,
+    bridgeReachable: async () => { pings++; return true; },
+    listITermSessions: async () => [],
+    itermSessionNameMatches: () => false,
+  });
+  expect(alive).toBe(true);
+  expect(pings).toBe(0);
+});
+
+test("failed optional iTerm probes still allow a live tmux fallback", async () => {
+  const alive = await isAgentSessionAlive({ agentId: "alpha", itermGuid: "old" }, {
+    tmuxSessionAlive: () => true,
+    bridgeReachable: async () => true,
+    listITermSessions: async () => { throw new Error("bridge disconnected"); },
+    itermSessionNameMatches: () => false,
+  });
+  expect(alive).toBe(true);
+});
+
+test("tmux started while an iTerm probe was pending is detected on the final check", async () => {
+  let tmuxLive = false;
+  const alive = await isAgentSessionAlive({ agentId: "alpha" }, {
+    tmuxSessionAlive: () => tmuxLive,
+    bridgeReachable: async () => { tmuxLive = true; return false; },
+    listITermSessions: async () => [],
+    itermSessionNameMatches: () => false,
+  });
+  expect(alive).toBe(true);
+});

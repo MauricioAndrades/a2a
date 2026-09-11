@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -140,3 +141,15 @@ test("readJsonBody does not resolve after oversize reject even when end fires", 
     await runtime.close();
   }
 });
+
+for (const event of ["aborted", "close"]) {
+  test(`body reader rejects incomplete requests on ${event} and ignores late events`, async () => {
+    const req = new EventEmitter();
+    const pending = readJsonBody(req);
+    req.emit("data", Buffer.from("partial"));
+    req.emit(event);
+    await assert.rejects(pending, /request body aborted/);
+    req.emit("end");
+    req.emit("error", new Error("late socket failure"));
+  });
+}

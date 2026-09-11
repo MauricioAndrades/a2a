@@ -136,6 +136,8 @@ export function buildSessionInventory({
   const tmuxSet = new Set(tmuxSessions);
   const itermLiveSet = new Set(itermLiveAgentIds);
   const registeredIds = new Set();
+  const registeredTmuxSessions = new Set();
+  const registeredItermGuids = new Set();
   const cached = new Set(Array.isArray(cachedAgentIds) ? cachedAgentIds : []);
 
   const registered = [];
@@ -144,6 +146,12 @@ export function buildSessionInventory({
       continue;
     }
     registeredIds.add(a.agentId);
+    const target = a.tmuxTarget || `${a.agentId}:0.0`;
+    const targetSession = target.split(":", 1)[0].replace(/^=/, "");
+    registeredTmuxSessions.add(targetSession);
+    if (typeof a.itermGuid === "string" && a.itermGuid.trim()) {
+      registeredItermGuids.add(a.itermGuid.trim());
+    }
     const cohort = parseCohortDescription(a.description);
     registered.push({
       agentId: a.agentId,
@@ -152,7 +160,7 @@ export function buildSessionInventory({
       description: a.description || "",
       cohort,
       status:
-        tmuxSet.has(a.agentId) || itermLiveSet.has(a.agentId)
+        tmuxSet.has(targetSession) || itermLiveSet.has(a.agentId)
           ? "live"
           : "bridge-only",
       yolo: typeof a.yolo === "boolean" ? a.yolo : null,
@@ -187,8 +195,8 @@ export function buildSessionInventory({
   for (const s of tmuxSessions) {
     if (!isViewName(s)) continue;
     const base = baseFromView(s);
-    let known = false;
-    if (base) {
+    let known = viewMap.get(s)?.known === true;
+    if (base && !known) {
       try {
         if (isGroup(base)) known = true;
       } catch {
@@ -220,7 +228,7 @@ export function buildSessionInventory({
   // only a compatibility hint for older sessions that pre-date the token.
   const orphans = [];
   for (const s of tmuxSessions) {
-    if (registeredIds.has(s)) continue;
+    if (registeredIds.has(s) || registeredTmuxSessions.has(s)) continue;
     if (isViewName(s)) continue;
     let owned;
     try {
@@ -234,7 +242,7 @@ export function buildSessionInventory({
   const itermOrphans = [];
   for (const session of itermSessions) {
     const guid = typeof session?.guid === "string" ? session.guid : "";
-    if (!guid) continue;
+    if (!guid || registeredItermGuids.has(guid)) continue;
     let owned;
     try {
       owned = isA2aOwnedITermSession(guid) === true;

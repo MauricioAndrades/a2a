@@ -25,46 +25,12 @@ const A2A_INSTALL_TOKEN_OPTION = "@a2a-install-token";
 const RUNTIME_SNAPSHOT_CACHE_TTL_MS = 750;
 
 let runtimeSnapshotCache = null;
+let runtimeSnapshotGeneration = 0;
+const pendingRuntimeSnapshots = new Map();
 
-function storeRuntimeSnapshotCache(key, expires, value) {
-  runtimeSnapshotCache = { key, expires, value };
-}
-
-function appendCacheValue(parts, value) {
-  const encoded = JSON.stringify(value ?? null);
-  parts.push(String(encoded.length), ":", encoded, ";");
-}
-
-function appendAgentCacheEntry(parts, agent) {
-  appendCacheValue(parts, agent?.agentId);
-  appendCacheValue(parts, agent?.tmuxTarget);
-  appendCacheValue(parts, agent?.itermGuid);
-  appendCacheValue(parts, agent?.description);
-  appendCacheValue(parts, agent?.yolo);
-  appendCacheValue(parts, agent?.backend);
-  appendCacheValue(parts, agent?.registeredAt);
-}
-
-function buildRuntimeSnapshotCacheKey({
-  registeredAgents,
-  peerSnapshots,
-  bridgeError,
-  self,
-  launchCwd,
-  registry,
-}) {
-  const parts = [];
-  parts.push("agents=", String(registeredAgents.length), ";");
-  for (const agent of registeredAgents) appendAgentCacheEntry(parts, agent);
-  appendCacheValue(parts, peerSnapshots.length);
-  appendCacheValue(parts, bridgeError);
-  appendCacheValue(parts, self);
-  appendCacheValue(parts, launchCwd);
-  parts.push("cached=", String(registry.cachedAgentIds.length), ";");
-  for (const id of registry.cachedAgentIds) appendCacheValue(parts, id);
-  appendCacheValue(parts, registry.installToken);
-  appendCacheValue(parts, registry.error);
-  return parts.join("");
+function buildRuntimeSnapshotCacheKey(input) {
+  // Every field returned to callers must participate in cache identity.
+  return JSON.stringify(input);
 }
 
 function tmux(args) {
@@ -149,14 +115,16 @@ function agentIdFromItermSessionName(sessionName) {
 
 function collectItermLiveAgentIds(registeredAgents, sessions) {
   const sessionAgentIds = new Set();
+  const sessionGuids = new Set();
   for (const session of sessions) {
+    if (session?.guid) sessionGuids.add(session.guid);
     const id = agentIdFromItermSessionName(session?.name);
     if (id) sessionAgentIds.add(id);
   }
   const ids = [];
   for (const agent of registeredAgents) {
     if (!agent?.agentId) continue;
-    if (sessionAgentIds.has(agent.agentId)) {
+    if (sessionAgentIds.has(agent.agentId) || sessionGuids.has(agent.itermGuid)) {
       ids.push(agent.agentId);
     }
   }
@@ -200,6 +168,34 @@ export async function buildRuntimeSnapshotFromState({
     return runtimeSnapshotCache.value;
   }
 
+  if (cacheKey && pendingRuntimeSnapshots.has(cacheKey)) {
+    return pendingRuntimeSnapshots.get(cacheKey);
+  }
+  const generation = runtimeSnapshotGeneration;
+  const pending = collectRuntimeSnapshot({
+    registeredAgents, peerSnapshots, bridgeError, self, launchCwd, registry,
+  }).then((value) => {
+    if (cacheKey && generation === runtimeSnapshotGeneration) {
+      runtimeSnapshotCache = {
+        key: cacheKey,
+        expires: Date.now() + RUNTIME_SNAPSHOT_CACHE_TTL_MS,
+        value,
+      };
+    }
+    return value;
+  }).finally(() => {
+    // A reset may already have started a newer collection under the same key.
+    if (cacheKey && pendingRuntimeSnapshots.get(cacheKey) === pending) {
+      pendingRuntimeSnapshots.delete(cacheKey);
+    }
+  });
+  if (cacheKey) pendingRuntimeSnapshots.set(cacheKey, pending);
+  return pending;
+}
+
+async function collectRuntimeSnapshot({
+  registeredAgents, peerSnapshots, bridgeError, self, launchCwd, registry,
+}) {
   const itermSessions = await collectItermSessionsForRuntime();
   const itermLiveAgentIds = collectItermLiveAgentIds(
     registeredAgents,
@@ -237,16 +233,11 @@ export async function buildRuntimeSnapshotFromState({
     registry,
     bridgeError,
   };
-  if (cacheKey) {
-    storeRuntimeSnapshotCache(
-      cacheKey,
-      Date.now() + RUNTIME_SNAPSHOT_CACHE_TTL_MS,
-      value,
-    );
-  }
   return value;
 }
 
 export function clearRuntimeSnapshotCache() {
+  runtimeSnapshotGeneration++;
+  pendingRuntimeSnapshots.clear();
   runtimeSnapshotCache = null;
 }

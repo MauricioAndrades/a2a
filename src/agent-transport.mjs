@@ -37,15 +37,20 @@ export async function isAgentSessionAlive(agent, deps) {
     itermSessionNameMatches,
     tmuxSessionAlive,
   } = deps;
-  if (await bridgeReachable()) {
-    const sessions = await listITermSessions();
-    const stored =
-      viableItermGuid(agent.itermGuid) ? agent.itermGuid.trim() : null;
-    for (const session of sessions) {
-      if (stored && session.guid === stored) return true;
-      if (itermSessionNameMatches(session.name, agent.agentId)) return true;
-    }
-  }
   const target = agent.tmuxTarget || `${agent.agentId}:0.0`;
+  const stored = viableItermGuid(agent.itermGuid) ? agent.itermGuid.trim() : null;
+  // Do not ping and list iTerm sessions for every already-live tmux recipient.
+  if (!stored && tmuxSessionAlive(target)) return true;
+  try {
+    if (await bridgeReachable()) {
+      const sessions = await listITermSessions();
+      for (const session of sessions) {
+        if (stored && session.guid === stored) return true;
+        if (itermSessionNameMatches(session.name, agent.agentId)) return true;
+      }
+    }
+  } catch {
+    // An optional iTerm probe failure must not hide a live tmux fallback.
+  }
   return tmuxSessionAlive(target);
 }

@@ -35,8 +35,10 @@ const ITERM_NAME_DECORATION_RE = /^\s+[-\u2013\u2014]\s+/;
 let cachedBridgeReachable = null;
 /** @type {Map<string, {expires:number}>} — positive results only. */
 const tmuxAliveCache = new Map();
-/** @type {Map<string, {expires:number}>} — positive matches only. */
-const itermNameCache = new Map();
+let lastTmuxCacheSweep = 0;
+let probeGeneration = 0;
+let pendingBridgePing = null;
+let pendingITermSessions = null;
 /** @type {{sessions:Array<{guid:string,name:string|null,installToken:string|null}>,expires:number,sessionByGuid:Map<string,{guid:string,name:string|null,installToken:string|null}>,guidByAgentName:Map<string,string>}|null} */
 let cachedITermSessions = null;
 
@@ -76,13 +78,21 @@ export async function bridgeReachable() {
   if (cachedBridgeReachable && cachedBridgeReachable.expires > Date.now()) {
     return true;
   }
-  const result = await pingITerm2Bridge();
-  const ok = Boolean(result?.ok);
-  cachedBridgeReachable = bridgeReachabilityCacheAfterPing(
-    cachedBridgeReachable,
-    ok,
-  );
-  return ok;
+  if (pendingBridgePing) return pendingBridgePing;
+  const generation = probeGeneration;
+  const pending = pingITerm2Bridge().then((result) => {
+    const ok = Boolean(result?.ok);
+    if (generation === probeGeneration) {
+      cachedBridgeReachable = bridgeReachabilityCacheAfterPing(
+        cachedBridgeReachable, ok,
+      );
+    }
+    return ok;
+  }).finally(() => {
+    if (pendingBridgePing === pending) pendingBridgePing = null;
+  });
+  pendingBridgePing = pending;
+  return pending;
 }
 
 /**
@@ -97,7 +107,14 @@ export async function bridgeReachable() {
  */
 export function tmuxSessionAlive(target) {
   if (typeof target !== "string" || target.trim() === "") return false;
-  const session = target.split(":")[0];
+  const session = target.split(":")[0].replace(/^=/, "");
+  const now = Date.now();
+  if (now - lastTmuxCacheSweep >= TMUX_ALIVE_TTL_MS) {
+    for (const [key, value] of tmuxAliveCache) {
+      if (value.expires <= now) tmuxAliveCache.delete(key);
+    }
+    lastTmuxCacheSweep = now;
+  }
   const cached = tmuxAliveCache.get(session);
   if (cached && cached.expires > Date.now()) return true;
   const r = spawnSync(TMUX_EXECUTABLE, [
@@ -128,28 +145,34 @@ async function getITermSessionsCacheEntry() {
   if (cachedITermSessions && cachedITermSessions.expires > Date.now()) {
     return cachedITermSessions;
   }
-  const r = await listITerm2Sessions();
-  if (!r?.ok || !Array.isArray(r.sessions)) {
-    cachedBridgeReachable = bridgeReachabilityCacheAfterPing(
-      cachedBridgeReachable,
-      false,
-    );
-    return null;
-  }
-  const mapped = r.sessions.map((s) => ({
-    guid: String(s.guid || ""),
-    name: typeof s.name === "string" ? s.name : null,
-    installToken:
-      typeof s.install_token === "string" && s.install_token
-        ? s.install_token
-        : null,
-  }));
-  cachedBridgeReachable = bridgeReachabilityCacheAfterPing(
-    cachedBridgeReachable,
-    true,
-  );
-  storeITermSessions(mapped);
-  return cachedITermSessions;
+  if (pendingITermSessions) return pendingITermSessions;
+  const generation = probeGeneration;
+  const pending = listITerm2Sessions().then((r) => {
+    const ok = Boolean(r?.ok && Array.isArray(r.sessions));
+    if (generation === probeGeneration) {
+      cachedBridgeReachable = bridgeReachabilityCacheAfterPing(
+        cachedBridgeReachable, ok,
+      );
+    }
+    if (!ok) return null;
+    const mapped = r.sessions
+      .filter((session) => session && typeof session.guid === "string" && session.guid)
+      .map((session) => ({
+        guid: session.guid,
+        name: typeof session.name === "string" ? session.name : null,
+        installToken:
+          typeof session.install_token === "string" && session.install_token
+            ? session.install_token
+            : null,
+      }));
+    const entry = buildITermSessionCacheEntry(mapped);
+    if (generation === probeGeneration) cachedITermSessions = entry;
+    return entry;
+  }).finally(() => {
+    if (pendingITermSessions === pending) pendingITermSessions = null;
+  });
+  pendingITermSessions = pending;
+  return pending;
 }
 
 /**
@@ -160,17 +183,6 @@ async function getITermSessionsCacheEntry() {
 async function listITermSessionsCached() {
   const entry = await getITermSessionsCacheEntry();
   return entry?.sessions || [];
-}
-
-/**
- * Write the TTL-stamped iTerm session cache entry. Last writer wins —
- * concurrent refreshes both carry fresh bridge data.
- *
- * @param {Array<{guid:string, name:string|null, installToken:string|null}>} sessions
- * @returns {void}
- */
-function storeITermSessions(sessions) {
-  cachedITermSessions = buildITermSessionCacheEntry(sessions);
 }
 
 /**
@@ -218,16 +230,10 @@ export function buildITermSessionCacheEntry(sessions, now = Date.now()) {
  */
 export async function itermSessionNameMatch(agentName) {
   if (typeof agentName !== "string" || agentName === "") return false;
-  const cached = itermNameCache.get(agentName);
-  if (cached && cached.expires > Date.now()) return true;
+  // A separate name TTL would prolong stale matches beyond the
+  // lifetime of the session list they came from.
   const entry = await getITermSessionsCacheEntry();
-  const matched = Boolean(entry?.guidByAgentName.has(agentName));
-  if (shouldCacheItermNameMatch(matched)) {
-    itermNameCache.set(agentName, {
-      expires: Date.now() + ITERM_SESSIONS_TTL_MS,
-    });
-  }
-  return matched;
+  return Boolean(entry?.guidByAgentName.has(agentName));
 }
 
 /**
@@ -265,8 +271,8 @@ function itermAgentNameFromSessionName(sessionName) {
  */
 export function itermSessionNameMatches(sessionName, agentName) {
   if (typeof sessionName !== "string") return false;
-  if (sessionName === agentName) return true;
   if (typeof agentName !== "string" || agentName === "") return false;
+  if (sessionName === agentName) return true;
   // iTerm decorates the name with `<sep>` where sep can be em-dash (U+2014),
   // en-dash (U+2013), or ASCII hyphen-minus, surrounded by NBSP (U+00A0)
   // or ASCII space. Treat any of those as a valid separator.
@@ -308,8 +314,10 @@ export async function isA2aOwnedITermSession(guid, expectedToken) {
  * @returns {void}
  */
 export function invalidateITermSessionCache() {
+  probeGeneration++;
+  pendingBridgePing = null;
+  pendingITermSessions = null;
   cachedITermSessions = null;
-  itermNameCache.clear();
 }
 
 /**
@@ -332,6 +340,6 @@ export async function itermGuidExists(guid) {
 export function resetTransportProbeCache() {
   cachedBridgeReachable = null;
   tmuxAliveCache.clear();
-  itermNameCache.clear();
-  cachedITermSessions = null;
+  lastTmuxCacheSweep = 0;
+  invalidateITermSessionCache();
 }

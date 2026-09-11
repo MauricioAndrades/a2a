@@ -214,3 +214,74 @@ describe("runtime snapshot iTerm inventory", () => {
     ]);
   });
 });
+
+
+describe("runtime snapshot cache consistency", () => {
+  test("coalesces concurrent cache misses into one set of runtime probes", async () => {
+    let release;
+    vi.mocked(listITermSessionsWithOwnership).mockImplementation(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    const pending = Array.from({ length: 20 }, () =>
+      buildRuntimeSnapshotFromState({ cache: true }),
+    );
+    expect(listITermSessionsWithOwnership).toHaveBeenCalledTimes(1);
+    release([]);
+    const results = await Promise.all(pending);
+    expect(results.every((value) => value === results[0])).toBe(true);
+    expect(runtimeMocks.spawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  test("cache identity includes registration metadata and peer contents, not just counts", async () => {
+    vi.mocked(listITermSessionsWithOwnership).mockResolvedValue([]);
+    const first = await buildRuntimeSnapshotFromState({
+      cache: true,
+      registeredAgents: [{ agentId: "alpha", cwd: "/one", backendArgs: ["--one"] }],
+      peerSnapshots: [{ peer: "remote", agents: [], error: null }],
+    });
+    const second = await buildRuntimeSnapshotFromState({
+      cache: true,
+      registeredAgents: [{ agentId: "alpha", cwd: "/two", backendArgs: ["--two"] }],
+      peerSnapshots: [{ peer: "remote", agents: [], error: null }],
+    });
+    const third = await buildRuntimeSnapshotFromState({
+      cache: true,
+      registeredAgents: second.registeredAgents,
+      peerSnapshots: [{ peer: "remote", agents: [], error: "offline" }],
+    });
+    expect(second).not.toBe(first);
+    expect(third).not.toBe(second);
+    expect(second.inventory.registered[0].cwd).toBe("/two");
+    expect(third.peerSnapshots[0].error).toBe("offline");
+    expect(listITermSessionsWithOwnership).toHaveBeenCalledTimes(3);
+  });
+
+  test("an invalidated in-flight snapshot cannot replace newer cached state", async () => {
+    const releases = [];
+    vi.mocked(listITermSessionsWithOwnership).mockImplementation(
+      () => new Promise((resolve) => releases.push(resolve)),
+    );
+    const input = { cache: true, registeredAgents: [{ agentId: "alpha" }] };
+    const oldRequest = buildRuntimeSnapshotFromState(input);
+    clearRuntimeSnapshotCache();
+    const newRequest = buildRuntimeSnapshotFromState(input);
+    expect(releases).toHaveLength(2);
+    releases[1]([{ guid: "new-guid", name: "alpha", installToken: null }]);
+    const fresh = await newRequest;
+    releases[0]([]);
+    await oldRequest;
+    expect(await buildRuntimeSnapshotFromState(input)).toBe(fresh);
+    expect(fresh.inventory.registered[0].status).toBe("live");
+    expect(listITermSessionsWithOwnership).toHaveBeenCalledTimes(2);
+  });
+
+  test("renaming an iTerm window does not lose liveness for its registered GUID", async () => {
+    vi.mocked(listITermSessionsWithOwnership).mockResolvedValue([
+      { guid: "stable-guid", name: "manually renamed title", installToken: null },
+    ]);
+    const result = await buildRuntimeSnapshotFromState({
+      registeredAgents: [{ agentId: "alpha", itermGuid: "stable-guid" }],
+    });
+    expect(result.inventory.registered[0].status).toBe("live");
+  });
+});

@@ -89,7 +89,8 @@ export async function selectTransportForAgent(agent, deps = {}) {
     deps.tmuxSessionAlive || probeTmuxSessionAlive;
   const preference = activeProtocol();
   const agentName = agent?.agentId || "";
-  const tmuxAlive = tmuxSessionAliveProbe(agent?.tmuxTarget || agentName);
+  const tmuxTarget = agent?.tmuxTarget || (agentName ? `${agentName}:0.0` : null);
+  const tmuxAlive = tmuxSessionAliveProbe(tmuxTarget);
   let resolvedGuid =
     typeof agent?.itermGuid === "string" && agent.itermGuid.trim()
       ? agent.itermGuid.trim()
@@ -101,7 +102,7 @@ export async function selectTransportForAgent(agent, deps = {}) {
     !viableItermGuid(resolvedGuid)
   ) {
     const pickInputs = {
-      agent: { ...agent, itermGuid: undefined },
+      agent: { ...agent, tmuxTarget, itermGuid: undefined },
       preference,
       bridgeReachable: false,
       itermNameMatch: false,
@@ -129,7 +130,7 @@ export async function selectTransportForAgent(agent, deps = {}) {
     itermNameMatch = Boolean(resolvedGuid);
   }
   const transport = pickTransport({
-    agent: { ...agent, itermGuid: resolvedGuid || undefined },
+    agent: { ...agent, tmuxTarget, itermGuid: resolvedGuid || undefined },
     preference,
     bridgeReachable: bridgeUp,
     itermNameMatch: itermNameMatch || Boolean(resolvedGuid),
@@ -139,7 +140,7 @@ export async function selectTransportForAgent(agent, deps = {}) {
   return {
     transport,
     reason: explainPick({
-      agent: { ...agent, itermGuid: resolvedGuid || undefined },
+      agent: { ...agent, tmuxTarget, itermGuid: resolvedGuid || undefined },
       preference,
       bridgeReachable: bridgeUp,
       itermNameMatch: itermNameMatch || Boolean(resolvedGuid),
@@ -183,10 +184,16 @@ export async function deliverViaActiveProtocol(opts) {
       error: reason,
     };
   }
+  const deliveryOpts = {
+    ...opts,
+    agentName: agentInput.agentId,
+    tmuxTarget: agentInput.tmuxTarget,
+    backend: opts.backend ?? agentInput.backend,
+  };
   if (transport === "iterm") {
-    return await deliverIterm({ ...opts, itermGuid });
+    return await deliverIterm({ ...deliveryOpts, itermGuid });
   }
-  return deliverTmux(opts);
+  return deliverTmux(deliveryOpts);
 }
 
 async function deliverIterm({

@@ -13,6 +13,7 @@ import {
   buildITermSessionCacheEntry,
   bridgeReachable,
   isA2aOwnedITermSession,
+  invalidateITermSessionCache,
   itermGuidByName,
   itermGuidExists,
   itermSessionNameMatch,
@@ -221,5 +222,71 @@ describe.skipIf(!hasTmux)("tmuxSessionAlive — real tmux", () => {
     } finally {
       spawnSync("tmux", ["kill-session", "-t", `=${base}-worker`]);
     }
+  });
+});
+
+
+describe("coalesced transport probes", () => {
+  test("concurrent bridge pings share one socket request", async () => {
+    let release;
+    vi.mocked(pingITerm2Bridge).mockImplementation(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    const pending = Array.from({ length: 25 }, () => bridgeReachable());
+    expect(pingITerm2Bridge).toHaveBeenCalledTimes(1);
+    release({ ok: true });
+    expect((await Promise.all(pending)).every(Boolean)).toBe(true);
+  });
+
+  test("name, GUID, and ownership callers share one session listing", async () => {
+    let release;
+    vi.mocked(listITerm2Sessions).mockImplementation(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    const pending = [
+      itermSessionNameMatch("driver"), itermGuidByName("driver"),
+      itermGuidExists("guid-driver"), isA2aOwnedITermSession("guid-driver", "token"),
+    ];
+    expect(listITerm2Sessions).toHaveBeenCalledTimes(1);
+    release({ ok: true, sessions: [{ guid: "guid-driver", name: "driver", install_token: "token" }] });
+    expect(await Promise.all(pending)).toEqual([true, "guid-driver", true, true]);
+  });
+
+  test("a pre-invalidation response cannot overwrite the new session inventory", async () => {
+    const releases = [];
+    vi.mocked(listITerm2Sessions).mockImplementation(
+      () => new Promise((resolve) => releases.push(resolve)),
+    );
+    const old = itermGuidByName("driver");
+    invalidateITermSessionCache();
+    const fresh = itermGuidByName("driver");
+    releases[1]({ ok: true, sessions: [{ guid: "new", name: "driver" }] });
+    expect(await fresh).toBe("new");
+    releases[0]({ ok: true, sessions: [{ guid: "old", name: "driver" }] });
+    expect(await old).toBe("old");
+    expect(await itermGuidByName("driver")).toBe("new");
+    expect(listITerm2Sessions).toHaveBeenCalledTimes(2);
+  });
+
+  test("name lookup near expiry cannot extend a stale session list lifetime", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(await itermGuidByName("driver")).toBe("guid-driver");
+      vi.advanceTimersByTime(ITERM_SESSIONS_TTL_MS - 1);
+      expect(await itermSessionNameMatch("driver")).toBe(true);
+      vi.mocked(listITerm2Sessions).mockResolvedValue({ ok: true, sessions: [] });
+      vi.advanceTimersByTime(2);
+      expect(await itermSessionNameMatch("driver")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("malformed session records cannot hide valid records, and empty names never match", async () => {
+    vi.mocked(listITerm2Sessions).mockResolvedValue({
+      ok: true, sessions: [null, {}, { guid: "valid", name: "driver" }],
+    });
+    expect(await itermGuidByName("driver")).toBe("valid");
+    expect(itermSessionNameMatches("", "")).toBe(false);
   });
 });

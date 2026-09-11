@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -78,11 +79,22 @@ test("readTextBody rejects when byte budget exceeded (bytes not code units)", as
     }
   });
   try {
-    await assert.rejects(
-      () => sendChunkedRequest(runtime.port, [big, big]),
-      /socket hang up/,
-    );
+    const response = await sendChunkedRequest(runtime.port, [big, big]);
+    assert.equal(response.statusCode, 413);
+    assert.equal(response.body, "body too large");
   } finally {
     await runtime.close();
   }
 });
+
+for (const event of ["aborted", "close"]) {
+  test(`body reader rejects incomplete requests on ${event} and ignores late events`, async () => {
+    const req = new EventEmitter();
+    const pending = readTextBody(req);
+    req.emit("data", Buffer.from("partial"));
+    req.emit(event);
+    await assert.rejects(pending, /request body aborted/);
+    req.emit("end");
+    req.emit("error", new Error("late socket failure"));
+  });
+}

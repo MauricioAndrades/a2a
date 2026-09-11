@@ -17,7 +17,11 @@ export function readJsonBody(req, maxBytes = DEFAULT_MAX_BYTES) {
     const settle = (fn) => {
       if (settled) return;
       settled = true;
-      fn();
+      try {
+        fn();
+      } finally {
+        chunks.length = 0;
+      }
     };
 
     req.on("data", (c) => {
@@ -33,16 +37,8 @@ export function readJsonBody(req, maxBytes = DEFAULT_MAX_BYTES) {
           code: 413,
         });
         settle(() => reject(oversize));
-        /**
-         * Do NOT destroy the request: the handler awaiting this promise
-         * needs the connection alive to write a 413 response. The
-         * `settled` guard above swallows any further data events so we
-         * neither grow `chunks` nor resolve after the rejection. The
-         * server's natural backpressure stops reading once we stop
-         * consuming. Calling req.destroy() here closes the underlying
-         * socket and surfaces as a "socket hang up" on the client side
-         * instead of the expected 413.
-         */
+        // Keep the socket alive for HTTP 413. Subsequent chunks are
+        // drained by the settled guard without retaining their buffers.
         return;
       }
       chunks.push(buf);
@@ -60,5 +56,8 @@ export function readJsonBody(req, maxBytes = DEFAULT_MAX_BYTES) {
     });
 
     req.on("error", (err) => settle(() => reject(err)));
+    const aborted = () => settle(() => reject(new Error("request body aborted")));
+    req.once("aborted", aborted);
+    req.once("close", aborted);
   });
 }

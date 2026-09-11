@@ -6,7 +6,7 @@ vi.mock("../src/iterm2-delivery.mjs", () => ({
   deliverITerm2Input: vi.fn(),
 }));
 
-import { listITerm2Sessions, pingITerm2Bridge } from "../src/iterm2-delivery.mjs";
+import { deliverITerm2Input, listITerm2Sessions, pingITerm2Bridge } from "../src/iterm2-delivery.mjs";
 import {
   itermGuidByName,
   resetTransportProbeCache,
@@ -136,5 +136,28 @@ describe("deliverViaActiveProtocol — no viable transport", () => {
     // Nothing was attempted, so claiming "via tmux"/"via iterm" would be a
     // lie that callers render into misleading failure messages.
     expect(result.transport).toBe("none");
+  });
+});
+
+
+test("agentId-only registrations use the same default target for selection and delivery", async () => {
+  const tmuxSessionAlive = vi.fn().mockReturnValue(true);
+  const result = await selectTransportForAgent({ agentId: "alpha" }, { tmuxSessionAlive });
+  expect(tmuxSessionAlive).toHaveBeenCalledWith("alpha:0.0");
+  expect(result.transport).toBe("tmux");
+});
+
+test("agent-only delivery preserves its registered target and backend", async () => {
+  vi.mocked(listITerm2Sessions).mockResolvedValue({
+    ok: true, sessions: [{ guid: "registered-guid", name: "alpha" }],
+  });
+  vi.mocked(deliverITerm2Input).mockResolvedValue({ ok: true, bytes: 5 });
+  const result = await deliverViaActiveProtocol({
+    agent: { agentId: "alpha", itermGuid: "registered-guid", backend: "cursor-agent" },
+    content: "hello",
+  });
+  expect(result).toMatchObject({ ok: true, transport: "iterm" });
+  expect(deliverITerm2Input).toHaveBeenCalledWith({
+    target: "registered-guid", content: "hello", backend: "cursor-agent", submit: true, verify: undefined,
   });
 });

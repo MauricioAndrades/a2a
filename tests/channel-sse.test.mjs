@@ -32,3 +32,11 @@ test("broadcastSseChunk removes dead emitter and delivers to surviving listeners
   assert.deepEqual(got.sort(), ["a:x", "b:x"]);
   assert.equal(listeners.has(thrower), false);
 });
+
+
+test("carriage returns in text cannot inject SSE fields", () => {
+  assert.equal(
+    sseFrameFromText("a\revent: injected\r\nb"),
+    "data: a\ndata: event: injected\ndata: b\n\n",
+  );
+});

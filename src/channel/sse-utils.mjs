@@ -5,7 +5,7 @@
 export function sseFrameFromText(text) {
   return (
     `${text
-      .split("\n")
+      .split(/\r\n|\r|\n/)
       .map((l) => `data: ${l}\n`)
       .join("")  }\n`
   );

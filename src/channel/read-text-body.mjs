@@ -21,7 +21,11 @@ export function readTextBody(req, opts = {}) {
     const settle = (fn) => {
       if (settled) return;
       settled = true;
-      fn();
+      try {
+        fn();
+      } finally {
+        chunks.length = 0;
+      }
     };
     req.on("data", (c) => {
       if (settled) return;
@@ -29,7 +33,7 @@ export function readTextBody(req, opts = {}) {
       total += buf.length;
       if (total > maxBytes) {
         settle(() => reject(new Error("body too large")));
-        if (typeof req.destroy === "function") req.destroy();
+        // Keep the socket alive for HTTP 413; settled data events are drained.
         return;
       }
       chunks.push(buf);
@@ -40,5 +44,8 @@ export function readTextBody(req, opts = {}) {
     req.on("error", (err) => {
       settle(() => reject(err));
     });
+    const aborted = () => settle(() => reject(new Error("request body aborted")));
+    req.once("aborted", aborted);
+    req.once("close", aborted);
   });
 }
