@@ -23,7 +23,13 @@ jobs:
           sudo apt-get install -y tmux
           npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps
       - name: Preserve native tmux for offline verification
-        run: tar -czf "$RUNNER_TEMP/a2a-native-tmux.tar.gz" -C /usr/bin tmux
+        run: |
+          mkdir -p "$RUNNER_TEMP/a2a-native-tmux/lib"
+          cp /usr/bin/tmux "$RUNNER_TEMP/a2a-native-tmux/"
+          ldd /usr/bin/tmux | awk '/lib(tinfo|event_core|utempter)/ { print $3 }' | while read -r lib; do
+            cp -L "$lib" "$RUNNER_TEMP/a2a-native-tmux/lib/"
+          done
+          tar -czf "$RUNNER_TEMP/a2a-native-tmux.tar.gz" -C "$RUNNER_TEMP/a2a-native-tmux" .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: a2a-native-tmux
