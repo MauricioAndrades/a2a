@@ -2,11 +2,11 @@ name: A2A maintenance verification
 on:
   push:
     branches: [main]
-    paths: [.github/workflows/a2a-maintenance-verify.yml]
+  pull_request:
 permissions:
   contents: read
 jobs:
-  baseline:
+  javascript:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,38 +21,44 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y tmux
-          npm install --ignore-scripts --no-audit --no-fund
-      - name: Native Vitest baseline
-        id: vitest
-        continue-on-error: true
+          npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+      - name: Preserve Linux verification dependencies
+        run: tar -czf "$RUNNER_TEMP/a2a-linux-test-dependencies.tar.gz" node_modules
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: a2a-linux-test-dependencies
+          path: ${{ runner.temp }}/a2a-linux-test-dependencies.tar.gz
+          retention-days: 1
+      - name: Native Vitest
         run: npm test -- --reporter=verbose
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [cmd/a2a-dashboard, cmd/a2a-input-probe]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.24.x'
+          go-version-file: ${{ matrix.module }}/go.mod
           cache: false
-      - name: Dashboard Go baseline
-        id: dashboard
-        continue-on-error: true
-        working-directory: cmd/a2a-dashboard
+      - name: Go race tests
+        working-directory: ${{ matrix.module }}
         run: go test -race ./...
-      - name: Input probe Go baseline
-        id: probe
-        continue-on-error: true
-        working-directory: cmd/a2a-input-probe
-        run: go test -race ./...
+  syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Python and shell syntax
-        id: syntax
-        continue-on-error: true
         run: |
           python3 -m py_compile cmd/a2a-iterm2-bridge/bridge.py
-          bash -n cmd/a2a-iterm2-bridge/launch.sh install scripts/a2a-status-segment.sh completions/a2a.bash
-      - name: Baseline summary
-        if: always()
-        env:
-          VITEST_RESULT: ${{ steps.vitest.outcome }}
-          DASHBOARD_RESULT: ${{ steps.dashboard.outcome }}
-          PROBE_RESULT: ${{ steps.probe.outcome }}
-          SYNTAX_RESULT: ${{ steps.syntax.outcome }}
-        run: |
-          printf 'Vitest: %s\nDashboard Go: %s\nInput probe Go: %s\nSyntax: %s\n' "$VITEST_RESULT" "$DASHBOARD_RESULT" "$PROBE_RESULT" "$SYNTAX_RESULT" | tee -a "$GITHUB_STEP_SUMMARY"
-          test "$VITEST_RESULT:$DASHBOARD_RESULT:$PROBE_RESULT:$SYNTAX_RESULT" = success:success:success:success
+          for file in cmd/a2a-iterm2-bridge/launch.sh install scripts/a2a-status-segment.sh completions/a2a.bash; do
+            bash -n "$file"
+          done
