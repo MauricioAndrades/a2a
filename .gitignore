@@ -2,7 +2,8 @@
 .archive
 .claude
 .mcp.*
-teams/dw-bug-killers
+teams/
+wiki/
 
 # OS
 .DS_Store
