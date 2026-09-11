@@ -38,7 +38,7 @@ import {
 import {
   submitKeysForBackend,
 } from "./backend-delivery.mjs";
-import { shouldReviveAgentInTmux, isAgentSessionAlive } from "./agent-transport.mjs";
+import { isAgentSessionAlive } from "./agent-transport.mjs";
 import { activeProtocol, deliverViaActiveProtocol } from "./transport-router.mjs";
 import { viableItermGuid } from "./transport-select.mjs";
 import {
@@ -57,7 +57,6 @@ import {
   listITermSessionsWithOwnership,
   tmuxSessionAlive as probeTmuxSessionAlive,
 } from "./transport-probes.mjs";
-import { resolveLiveItermTarget } from "./iterm-agent-resolve.mjs";
 import { resolveReconnectTargets as resolveReconnectTargetsPure } from "./cli/reconnect-targets.mjs";
 import { resolveItermRestartSession } from "./cli/iterm-restart-plan.mjs";
 import {
@@ -99,6 +98,7 @@ import {
 } from "./recipient-selectors.mjs";
 import {
   activeKey,
+  activeHost,
   activeUrl,
   bridgeUrl,
   readPid,
@@ -153,6 +153,7 @@ const PACKAGE_A2A_SKILL_PATH = join(
   "a2a",
   "SKILL.md",
 );
+
 const INSTALLED_A2A_SKILL_PATH = join(
   homedir(),
   ".claude",
@@ -186,12 +187,7 @@ const OUTBOUND_ENVELOPE_RESERVED = new Set([
   "replyTo",
 ]);
 
-const A2A_SKILL_LOAD_PROMPT = [
-  "Before answering the first user message in this session, use your file-reading tool to read the a2a skill.",
-  `First read ${INSTALLED_A2A_SKILL_PATH}. If that file is unavailable, read ${PACKAGE_A2A_SKILL_PATH}.`,
-  "After reading it, acknowledge briefly that the a2a skill is loaded, then answer the user's message.",
-  "Follow that skill whenever you receive <a2a> tags or need to send/reply through a2a.",
-].join(" ");
+const A2A_SKILL_LOAD_PROMPT = `Load the a2a skill location at ${PACKAGE_A2A_SKILL_PATH}`
 
 function usage(code = 2) {
   process.stderr.write(
@@ -199,14 +195,14 @@ function usage(code = 2) {
 
 messaging
   a2a --bob 'hello'
-  a2a --reply --bob 'got it'
+  a2a --reply|write --bob 'got it'
   a2a --ask --bob 'does X work?'
   a2a --bob --mike 'heads up'
   a2a --message 'done'
   a2a --write 'broadcast to all'
   a2a '--write:*managers' 'status update?'
 
-  colon syntax
+  colon syntax:
   a2a --ask:bob:leah 'where for lunch?'
   a2a --message:darth --mood=angry 'where is padme'
 
@@ -227,13 +223,7 @@ command sequence (local key/text DSL — see docs/command-dsl.md)
   a2a command --bob --command 'ESC|ENTER'      # explicit subcommand form
 
 bridge
-  a2a bridge [start|stop|status]         a2a HTTP bridge (registry + envelope router)
-  a2a bridge iterm [start|stop|status|restart|foreground]
-                                         iTerm2 Python bridge (required for
-                                         iTerm-backed agents under
-                                         protocol=iterm)
-  a2a bridge all [start|stop|status|restart]
-                                         both at once
+  a2a bridge [iterm start|stop|status|restart|foreground] | [start|stop|status] | [all start|stop|status|restart]
 
 shell completion
   a2a completion bash > ~/.local/share/bash-completion/completions/a2a
@@ -276,7 +266,7 @@ sessions
                        see this swarm via 'a2a list'. Requires
                        'a2a config set key <secret>' unless --insecure is
                        passed. With --url URL, route replies through
-                       that remote bridge instead of starting a local tunnel.
+                       that remote bridge through a local callback tunnel.
   --no-global          override 'a2a config set global true' for a one-off
                        local-only start (no ngrok, no peer exposure).
 
@@ -284,7 +274,7 @@ sessions
   a2a list --no-peers                  skip peer fan-out (local + tmux only)
   a2a list --json                      machine-readable output incl. peers
   a2a reconnect [NAME] [--all] [--dashboard]
-  a2a ui [NAME] [--rebuild]            open the dashboard TUI; attaches if the
+  a2a ui NAME [--rebuild]            open the dashboard TUI; attaches if the
                                        view session exists, rebuilds from live
                                        agents otherwise (--rebuild forces it).
   a2a peek [NAME] [--lines=N]
@@ -354,20 +344,133 @@ function requestPort(url) {
 
 function joinedUrlPath(base, pathname) {
   const prefix = base.pathname.replace(/\/+$/, "");
-  const suffix = String(pathname || "/").startsWith("/")
-    ? String(pathname || "/")
-    : `/${pathname}`;
-  return `${prefix}${suffix}${base.search || ""}`;
+  const target = String(pathname || "/");
+  const hash = target.indexOf("#");
+  const pathAndQuery = hash === -1 ? target : target.slice(0, hash);
+  const queryIndex = pathAndQuery.indexOf("?");
+  const path = queryIndex === -1 ? pathAndQuery : pathAndQuery.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : pathAndQuery.slice(queryIndex + 1);
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  const search = [query, base.search.slice(1)].filter(Boolean).join("&");
+  return `${prefix}${suffix}${search ? `?${search}` : ""}`;
+}
+
+/** The configured bridge process can only be managed at its local listener. */
+function isLocalBridgeUrl(value = bridgeUrl()) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    const configured = activeHost().replace(/^\[|\]$/g, "").toLowerCase();
+    const loopback = new Set(["localhost", "127.0.0.1", "::1"]);
+    const sameHost = host === configured ||
+      (loopback.has(host) && (loopback.has(configured) || configured === "0.0.0.0" || configured === "::"));
+    return url.protocol === "http:" && sameHost &&
+      Number(requestPort(url)) === activePort() &&
+      (url.pathname === "/" || url.pathname === "");
+  } catch {
+    return false;
+  }
+}
+
+function agentIsRemote(agent) {
+  if (!agent) return false;
+  if (agent.kind === "remote") return true;
+  if (!agent.bridgeUrl) return false;
+  const localPublic = process.env.A2A_BRIDGE_PUBLIC || activeUrl();
+  const normalize = (value) => {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/, "");
+  };
+  try {
+    return !isLocalBridgeUrl(agent.bridgeUrl) &&
+      (!localPublic || normalize(agent.bridgeUrl) !== normalize(localPublic));
+  } catch {
+    // An invalid remote route must not turn into permission to touch a local pane.
+    return true;
+  }
+}
+
+/** JSON requests share response-error handling and an elapsed-time deadline. */
+function requestJsonAtUrl(method, base, pathname, body, key, timeoutMs) {
+  return new Promise((fulfill, reject) => {
+    let settled = false;
+    let req;
+    let timer;
+    const done = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const timedOut = () => {
+      const error = new Error(`timed out after ${timeoutMs}ms`);
+      error.code = "ETIMEDOUT";
+      done(reject, error);
+      req?.destroy(error);
+    };
+    try {
+      const payload = body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
+      const transport = transportForUrl(base);
+      timer = setTimeout(timedOut, timeoutMs);
+      req = transport({
+        method,
+        hostname: base.hostname.replace(/^\[|\]$/g, ""),
+        port: requestPort(base),
+        path: joinedUrlPath(base, pathname),
+        timeout: timeoutMs,
+        headers: {
+          Accept: "application/json",
+          ...(payload ? {
+            "Content-Type": "application/json",
+            "Content-Length": payload.length,
+          } : {}),
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        },
+      }, (res) => {
+        const chunks = [];
+        let ended = false;
+        const interrupted = () => {
+          const error = new Error("response closed before the complete body was received");
+          error.code = "ECONNRESET";
+          done(reject, error);
+        };
+        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.once("error", (err) => done(reject, err));
+        res.once("aborted", interrupted);
+        res.once("close", () => {
+          if (!ended) interrupted();
+        });
+        res.once("end", () => {
+          ended = true;
+          if (res.complete === false) {
+            interrupted();
+            return;
+          }
+          const raw = Buffer.concat(chunks).toString("utf8");
+          try {
+            done(fulfill, { status: res.statusCode || 0, body: raw ? JSON.parse(raw) : null });
+          } catch {
+            done(reject, new Error(`non-JSON (${res.statusCode}): ${raw.slice(0, 200)}`));
+          }
+        });
+      });
+      req.on("error", (err) => done(reject, err));
+      req.once("timeout", timedOut);
+      req.end(payload ?? undefined);
+    } catch (err) {
+      done(reject, err);
+      req?.destroy();
+    }
+  });
 }
 
 function sanitizeEnvelopeMeta(meta) {
-  const out = {};
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return out;
-  for (const [key, value] of Object.entries(meta)) {
-    if (OUTBOUND_ENVELOPE_RESERVED.has(key)) continue;
-    out[key] = value;
-  }
-  return out;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
+  return Object.fromEntries(
+    Object.entries(meta).filter(([key]) => !OUTBOUND_ENVELOPE_RESERVED.has(key)),
+  );
 }
 
 function uniqueAgentsById(agents) {
@@ -383,117 +486,68 @@ function uniqueAgentsById(agents) {
 }
 
 function requestOnce(method, pathname, body) {
-  return new Promise((fulfill, reject) => {
-    let settled = false;
-    const done = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      fn(value);
-    };
-    const KEY = activeKey();
-    let base;
-    try {
-      base = new URL(bridgeUrl());
-    } catch {
-      done(reject, new Error(`invalid bridge URL: ${bridgeUrl()}`));
-      return;
-    }
-    const payload =
-      body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
-    let transport;
-    try {
-      transport = transportForUrl(base);
-    } catch (err) {
-      done(reject, err);
-      return;
-    }
-    const req = transport(
-      {
-        method,
-        hostname: base.hostname,
-        port: requestPort(base),
-        path: joinedUrlPath(base, pathname),
-        timeout: LOCAL_REQUEST_TIMEOUT_MS,
-        headers: {
-          Accept: "application/json",
-          ...(payload
-            ? {
-                "Content-Type": "application/json",
-                "Content-Length": payload.length,
-              }
-            : {}),
-          ...(KEY ? { Authorization: `Bearer ${KEY}` } : {}),
-        },
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          try {
-            done(fulfill, {
-              status: res.statusCode || 0,
-              body: raw ? JSON.parse(raw) : null,
-            });
-          } catch {
-            done(
-              reject,
-              new Error(`non-JSON (${res.statusCode}): ${raw.slice(0, 200)}`),
-            );
-          }
-        });
-      },
-    );
-    req.on("error", (err) => done(reject, err));
-    req.on("timeout", () => {
-      done(reject, new Error(`timed out after ${LOCAL_REQUEST_TIMEOUT_MS}ms`));
-      req.destroy();
-    });
-    if (payload) req.write(payload);
-    req.end();
-  });
+  let base;
+  try {
+    base = new URL(bridgeUrl());
+  } catch {
+    return Promise.reject(new Error(`invalid bridge URL: ${bridgeUrl()}`));
+  }
+  return requestJsonAtUrl(method, base, pathname, body, activeKey(), LOCAL_REQUEST_TIMEOUT_MS);
 }
 
-async function ensureBridgeRunning() {
-  if (await bridgeHealthy()) return;
-  const stale = readPid();
-  if (stale && pidLooksLikeBridge(stale)) {
-    try {
-      process.kill(stale, "SIGTERM");
-      spawnSync("sleep", ["0.5"]);
-    } catch {
-      /* best effort */
-    }
-  }
-  const KEY = activeKey();
-  const child = spawn(process.execPath, [SERVER_SCRIPT], {
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-    env: { ...process.env, ...(KEY ? { A2A_KEY: KEY } : {}) },
-  });
-  child.unref();
-  for (let i = 0; i < 20; i++) {
-    await new Promise((fulfill) => setTimeout(fulfill, 250));
+let bridgeStartInFlight = null;
+
+function ensureBridgeRunning() {
+  if (bridgeStartInFlight) return bridgeStartInFlight;
+  bridgeStartInFlight = (async () => {
     if (await bridgeHealthy()) return;
-  }
-  throw new Error("bridge failed to start within 5s");
+    if (!isLocalBridgeUrl()) {
+      throw new Error(`bridge unavailable at ${bridgeUrl()}; a remote bridge cannot be started locally`);
+    }
+    const stale = readPid();
+    if (stale && pidLooksLikeBridge(stale)) {
+      stopBridgePid(stale, stale);
+      const stopDeadline = Date.now() + 5000;
+      while (isProcessAlive(stale) && Date.now() < stopDeadline) await sleep(100);
+      if (isProcessAlive(stale)) throw new Error(`bridge pid ${stale} did not stop`);
+    } else if (stale && !isProcessAlive(stale)) {
+      removePid(stale);
+    }
+    const KEY = activeKey();
+    const child = spawn(process.execPath, [SERVER_SCRIPT], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, ...(KEY ? { A2A_KEY: KEY } : {}) },
+    });
+    let spawnError = null;
+    let exited = false;
+    child.once("error", (err) => { spawnError = err; });
+    child.once("exit", () => { exited = true; });
+    child.unref();
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+      if (spawnError) throw new Error(`bridge spawn failed: ${spawnError.message}`, { cause: spawnError });
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      if (await bridgeHealthy(Math.min(2000, remaining))) return;
+      if (exited) throw new Error("bridge process exited during startup");
+    }
+    throw new Error("bridge failed to start within 5s");
+  })().finally(() => { bridgeStartInFlight = null; });
+  return bridgeStartInFlight;
 }
 
 async function request(method, pathname, body, opts = {}) {
   try {
     return await requestOnce(method, pathname, body);
   } catch (err) {
-    if (opts.autoStartBridge !== false && err?.code === "ECONNREFUSED") {
-      await ensureBridgeRunning();
-      return await requestOnce(method, pathname, body);
+    if (err?.code !== "ECONNREFUSED") throw err;
+    if (opts.autoStartBridge === false || !isLocalBridgeUrl()) {
+      throw new Error(`connection refused at ${bridgeUrl()}`, { cause: err });
     }
-    if (err?.code === "ECONNREFUSED") {
-      throw new Error(
-        `connection refused at ${bridgeUrl()} -- bridge auto-start failed`,
-        { cause: err },
-      );
-    }
-    throw err;
+    await ensureBridgeRunning();
+    return requestOnce(method, pathname, body);
   }
 }
 
@@ -514,75 +568,16 @@ async function request(method, pathname, body, opts = {}) {
  * @returns {Promise<{ status: number, body: any }>}
  */
 function peerRequest(method, peerUrl, peerKey, pathname, body) {
-  return new Promise((fulfill, reject) => {
-    let settled = false;
-    const done = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      fn(value);
-    };
-    let base;
-    try {
-      base = new URL(peerUrl);
-    } catch {
-      done(reject, new Error(`invalid peer URL: ${peerUrl}`));
-      return;
-    }
-    if (base.protocol !== "http:" && base.protocol !== "https:") {
-      done(reject, new Error(`peer URL must be http(s): ${peerUrl}`));
-      return;
-    }
-    const isHttps = base.protocol === "https:";
-    // Defer requiring the https transport to call time so the import stays
-    // colocated with the only branch that needs it.
-    const transport = isHttps ? httpsRequest : _request;
-    const payload =
-      body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
-    const req = transport(
-      {
-        method,
-        hostname: base.hostname,
-        port: base.port || (isHttps ? 443 : 80),
-        path: joinedUrlPath(base, pathname),
-        timeout: PEER_REQUEST_TIMEOUT_MS,
-        headers: {
-          Accept: "application/json",
-          ...(payload
-            ? {
-                "Content-Type": "application/json",
-                "Content-Length": payload.length,
-              }
-            : {}),
-          ...(peerKey ? { Authorization: `Bearer ${peerKey}` } : {}),
-        },
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          try {
-            done(fulfill, {
-              status: res.statusCode || 0,
-              body: raw ? JSON.parse(raw) : null,
-            });
-          } catch {
-            done(
-              reject,
-              new Error(`non-JSON (${res.statusCode}): ${raw.slice(0, 200)}`),
-            );
-          }
-        });
-      },
-    );
-    req.on("timeout", () => {
-      done(reject, new Error(`timed out after ${PEER_REQUEST_TIMEOUT_MS}ms`));
-      req.destroy();
-    });
-    req.on("error", (err) => done(reject, err));
-    if (payload) req.write(payload);
-    req.end();
-  });
+  let base;
+  try {
+    base = new URL(peerUrl);
+  } catch {
+    return Promise.reject(new Error(`invalid peer URL: ${peerUrl}`));
+  }
+  if (base.protocol !== "http:" && base.protocol !== "https:") {
+    return Promise.reject(new Error(`peer URL must be http(s): ${peerUrl}`));
+  }
+  return requestJsonAtUrl(method, base, pathname, body, peerKey, PEER_REQUEST_TIMEOUT_MS);
 }
 
 function parseArgs(args, flagSpec) {
@@ -632,7 +627,10 @@ function parseAuthArgs(args, knownValueFlags = new Set()) {
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
-    if (arg === "--") break;
+    if (arg === "--") {
+      if (i + 1 < args.length) die(`unexpected positional argument '${args[i + 1]}'`);
+      break;
+    }
     if (!arg.startsWith("--")) {
       die(`unexpected positional argument '${arg}'`);
     }
@@ -640,11 +638,12 @@ function parseAuthArgs(args, knownValueFlags = new Set()) {
     const key = eqIdx !== -1 ? arg.slice(2, eqIdx) : arg.slice(2);
     if (knownValueFlags.has(key)) {
       const val = eqIdx !== -1 ? arg.slice(eqIdx + 1) : args[i + 1];
-      if (!val || val.startsWith("--")) die(`--${key} requires a value`);
+      if (!val || (eqIdx === -1 && val.startsWith("--"))) die(`--${key} requires a value`);
       flags[key] = val;
       i += eqIdx !== -1 ? 1 : 2;
       continue;
     }
+    if (eqIdx !== -1) die(`peer selector --${key} does not take a value`);
     if (!/^[A-Za-z0-9_-]+$/.test(key)) die(`invalid peer name '${key}'`);
     if (peer) die(`multiple peer names: '${peer}' and '${key}'`);
     peer = key;
@@ -691,7 +690,7 @@ function normalizeBackendCommand(command, cwd = process.cwd()) {
 }
 
 function defaultBackendCommand(backend) {
-  return BACKENDS[backend] || "claude";
+  return Object.hasOwn(BACKENDS, backend) ? BACKENDS[backend] : "claude";
 }
 
 function backendCommandOverrideFor(backend, opts = {}) {
@@ -731,7 +730,78 @@ function backendCommandPayload(backendCommand) {
   return backendCommand ? { backendCommand } : {};
 }
 
+function localBridgeUrl() {
+  let host = activeHost().replace(/^\[|\]$/g, "");
+  if (host === "0.0.0.0") host = "127.0.0.1";
+  if (host === "::") host = "::1";
+  return `http://${host.includes(":") ? `[${host}]` : host}:${activePort()}`;
+}
+
+async function registerLocalAgent(payload) {
+  const primaryUrl = payload.backendEnv?.A2A_BRIDGE || bridgeUrl();
+  if (isLocalBridgeUrl(primaryUrl)) return request("POST", "/api/a2a/register", payload);
+  const publicUrl = payload.bridgeUrl || payload.backendEnv?.A2A_BRIDGE_PUBLIC || process.env.A2A_BRIDGE_PUBLIC || activeUrl();
+  if (!publicUrl) throw new Error("registering a local agent on a remote bridge requires a public callback URL; use 'a2a start --global --url URL'");
+  const base = new URL(localBridgeUrl());
+  const localRequest = (method, path, body) => requestJsonAtUrl(method, base, path, body, activeKey(), LOCAL_REQUEST_TIMEOUT_MS);
+  const before = await localRequest("GET", "/api/a2a/agents");
+  if (before.status !== 200 || !before.body?.success || !Array.isArray(before.body.data?.agents)) {
+    throw new Error(`cannot inspect callback bridge: ${before.body?.error || `HTTP ${before.status}`}`);
+  }
+  const previous = before.body.data.agents.find((agent) => agent.agentId === payload.agentId);
+  const localPayload = { ...payload };
+  delete localPayload.bridgeUrl;
+  const localResult = await localRequest("POST", "/api/a2a/register", localPayload);
+  if (localResult.status !== 200 || !localResult.body?.success) {
+    throw new Error(`callback registration failed: ${localResult.body?.error || `HTTP ${localResult.status}`}`);
+  }
+  try {
+    const result = primaryUrl === bridgeUrl()
+      ? await request("POST", "/api/a2a/register", { ...payload, bridgeUrl: publicUrl })
+      : await requestJsonAtUrl("POST", new URL(primaryUrl), "/api/a2a/register", { ...payload, bridgeUrl: publicUrl }, payload.backendEnv?.A2A_KEY || activeKey(), LOCAL_REQUEST_TIMEOUT_MS);
+    if (result.status !== 200 || !result.body?.success) throw new Error(result.body?.error || `HTTP ${result.status}`);
+    return result;
+  } catch (err) {
+    try {
+      const rollback = previous
+        ? await localRequest("POST", "/api/a2a/register", previous)
+        : await localRequest("DELETE", `/api/a2a/register/${encodeURIComponent(payload.agentId)}`);
+      if (rollback.status !== 200 || !rollback.body?.success) throw new Error(rollback.body?.error || `HTTP ${rollback.status}`);
+    } catch (rollbackError) {
+      info(`warning: callback registration rollback failed for '${payload.agentId}': ${rollbackError.message}`);
+    }
+    throw err;
+  }
+}
+
+async function unregisterAgentRegistration(id, agent = null) {
+  const path = `/api/a2a/register/${encodeURIComponent(id)}`;
+  if (agentIsRemote(agent)) return request("DELETE", path);
+  const primary = agent?.backendEnv?.A2A_BRIDGE || bridgeUrl();
+  if (isLocalBridgeUrl(primary)) return request("DELETE", path);
+  // Remove the remote route before the callback record. If it fails, the local
+  // metadata remains available for a retry instead of losing the remote address.
+  const remote = primary === bridgeUrl()
+    ? await request("DELETE", path)
+    : await requestJsonAtUrl("DELETE", new URL(primary), path, null, agent?.backendEnv?.A2A_KEY || activeKey(), LOCAL_REQUEST_TIMEOUT_MS);
+  if (remote.status !== 200 || !remote.body?.success) return remote;
+  const local = await requestJsonAtUrl("DELETE", new URL(localBridgeUrl()), path, null, activeKey(), LOCAL_REQUEST_TIMEOUT_MS);
+  if (local.status !== 200 || !local.body?.success) return local;
+  return {
+    ...local,
+    body: {
+      ...local.body,
+      data: { ...local.body.data, removed: Boolean(local.body.data?.removed || remote.body.data?.removed) },
+    },
+  };
+}
+
 function tmux(args, opts = {}) {
+  args = args.map((arg, index) => {
+    const flag = args[index - 1];
+    const sourceTarget = flag === "-s" && ["link-window", "move-window"].includes(args[0]);
+    return flag === "-t" || sourceTarget ? exactTmuxTarget(arg) : arg;
+  });
   if (opts.inherit)
     return spawnSync("tmux", args, { encoding: "utf8", stdio: "inherit" });
   return spawnSync("tmux", args, {
@@ -745,7 +815,33 @@ function tmux(args, opts = {}) {
 }
 
 function tmuxSessionExists(id) {
-  return tmux(["has-session", "-t", id]).status === 0;
+  if (typeof id !== "string" || !id) return false;
+  return tmux(["has-session", "-t", exactTmuxTarget(id)]).status === 0;
+}
+
+function exactTmuxTarget(target) {
+  if (typeof target !== "string" || !target || /^[=$%@]/.test(target) || target.startsWith(":")) return target;
+  const session = target.split(":")[0];
+  if (/[*?\[\]{}]/.test(session) || ["+", "-", "!"].includes(session)) return target;
+  return `=${target}`;
+}
+
+/** Find the actual first pane, respecting tmux base-index and pane-base-index. */
+function tmuxTargetForSession(name) {
+  const result = tmux([
+    "list-panes", "-s", "-t", exactTmuxTarget(name),
+    "-F", "#{session_name}:#{window_index}.#{pane_index}",
+  ]);
+  if (result.status !== 0) return null;
+  return (result.stdout || "").split("\n").find((line) => line.trim())?.trim() || null;
+}
+
+function currentAgentId() {
+  const session = currentTmuxSession();
+  return selfExclusionId({
+    selfId: isDashboardSession(session) ? null : session,
+    agentId: process.env.A2A_AGENT_ID,
+  }) || null;
 }
 // @a2a-install-token: per-install marker pinned on every a2a-spawned tmux
 // session so orphan-detection can prove the session came from this install
@@ -794,7 +890,9 @@ function tmuxWindowIdOf(target) {
 function tmuxWindowIdsInSession(target) {
   if (!target || !tmuxSessionExists(target)) return [];
   const r = tmux(["list-windows", "-t", target, "-F", "#{window_id}"]);
-  if (r.status !== 0) return [];
+  if (r.status !== 0) {
+    throw new Error(`cannot enumerate windows in '${target}': ${r.error?.message || (r.stderr || "").trim() || "tmux list-windows failed"}`);
+  }
   return [
     ...new Set(
       (r.stdout || "")
@@ -830,7 +928,11 @@ function tmuxWindowIdByName(name, expectedToken) {
 function tmuxWindowExists(windowId) {
   if (!windowId) return false;
   const r = tmux(["list-windows", "-a", "-F", "#{window_id}"]);
-  if (r.status !== 0) return false;
+  if (r.status !== 0) {
+    const message = (r.stderr || "").trim();
+    if (!r.error && /no server running|no sessions|error connecting to .*\(No such file or directory\)/i.test(message)) return false;
+    throw new Error(`cannot inspect tmux windows: ${r.error?.message || message || "tmux list-windows failed"}`);
+  }
   return (r.stdout || "")
     .split("\n")
     .map((s) => s.trim())
@@ -842,18 +944,23 @@ function tmuxKillSession(target) {
   return { ok: r.status === 0, stderr: (r.stderr || "").trim() };
 }
 function tmuxKillSessionDeep(target) {
-  const windowIds = tmuxWindowIdsInSession(target);
-  const result = tmuxKillSession(target);
-  for (const windowId of windowIds) {
-    if (!tmuxWindowExists(windowId)) continue;
-    const r = tmux(["kill-window", "-t", windowId]);
-    if (r.status !== 0)
-      return {
-        ok: false,
-        stderr: (r.stderr || "").trim() || "kill-window failed",
-      };
+  try {
+    const windowIds = tmuxWindowIdsInSession(target);
+    const result = tmuxKillSession(target);
+    if (result.ok === false) return result;
+    for (const windowId of windowIds) {
+      if (!tmuxWindowExists(windowId)) continue;
+      const r = tmux(["kill-window", "-t", windowId]);
+      if (r.status !== 0)
+        return {
+          ok: false,
+          stderr: (r.stderr || "").trim() || "kill-window failed",
+        };
+    }
+    return result.skipped && windowIds.length > 0 ? { ok: true } : result;
+  } catch (err) {
+    return { ok: false, stderr: err.message || String(err) };
   }
-  return result;
 }
 function tmuxSetInstallToken(target, token) {
   if (!token) return { ok: true, skipped: true };
@@ -888,15 +995,15 @@ function isDashboardSession(id) {
 
 function attachTmuxSession(target, opts = {}) {
   const wantNativeScroll = opts.nativeScroll ?? !process.env.TMUX;
-  if (wantNativeScroll) {
-    if (process.env.TMUX)
-      die(
-        "native scroll attach must be launched outside an existing tmux session",
-      );
-    tmux(["-CC", "attach", "-t", target], { inherit: true });
-    return;
+  if (wantNativeScroll && process.env.TMUX) {
+    die("native scroll attach must be launched outside an existing tmux session");
   }
-  tmux(["attach", "-t", target], { inherit: true });
+  const result = tmux([
+    ...(wantNativeScroll ? ["-CC"] : []), "attach", "-t", target,
+  ], { inherit: true });
+  if (result.error || result.status !== 0) {
+    die(`failed to attach '${target}': ${result.error?.message || result.signal || `exit ${result.status}`}`, 1);
+  }
 }
 
 function switchTmuxClient(target) {
@@ -941,6 +1048,7 @@ function normalizePeerUrlForConfig(value) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:")
     die("--url must be a valid http:// or https:// URL");
+  if (url.username || url.password) die("--url must not contain credentials; configure the bearer key separately");
   url.hash = "";
   url.search = "";
   return url.toString().replace(/\/+$/, "");
@@ -982,6 +1090,7 @@ function assertUniqueIds(ids, label) {
 }
 
 function shellQuote(arg) {
+  arg = String(arg);
   if (arg === "") return "''";
   if (/^[A-Za-z0-9_\-./:=]+$/.test(arg)) return arg;
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -989,15 +1098,14 @@ function shellQuote(arg) {
 
 function validateEnvMap(env) {
   if (env == null) return {};
-  if (typeof env !== "object" || Array.isArray(env))
-    die("team env must be an object");
-  const out = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
-      die(`invalid env key '${key}' in team spec`);
-    out[key] = value == null ? "" : String(value);
-  }
-  return out;
+  if (typeof env !== "object" || Array.isArray(env)) die("team env must be an object");
+  const entries = Object.entries(env).map(([key, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) die(`invalid env key '${key}' in team spec`);
+    const text = value == null ? "" : String(value);
+    if (text.includes("\0")) die(`env '${key}' must not contain NUL`);
+    return [key, text];
+  });
+  return Object.fromEntries(entries);
 }
 
 function buildEnvExports(env) {
@@ -1008,7 +1116,13 @@ function buildEnvExports(env) {
 }
 
 function agentEnv(agentId, env = {}) {
-  return { ...env, A2A_AGENT_ID: agentId };
+  const routing = {};
+  for (const key of ["A2A_BRIDGE", "A2A_BRIDGE_PUBLIC", "A2A_PUBLIC_URL", "A2A_PORT", "A2A_HOST", "A2A_KEY"]) {
+    if (process.env[key] !== undefined) routing[key] = process.env[key];
+  }
+  // Persist the routing environment with the registration as well as exporting
+  // it into the shell, so restarts from another terminal keep the same routes.
+  return { ...routing, ...validateEnvMap(env), A2A_AGENT_ID: agentId };
 }
 
 /**
@@ -1031,9 +1145,16 @@ const STALE_PARENT_SESSION_ENV_VARS = [
 ];
 
 function buildAgentLaunchCommand(backend, backendArgs, opts = {}) {
+  if (!Array.isArray(backendArgs) || backendArgs.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
+    throw new Error("backend args must be strings without NUL characters");
+  }
   const cli = resolvedBackendCommand(backend, opts);
   const quoted = [cli, ...backendArgs].map(shellQuote).join(" ");
-  const exports = buildEnvExports(opts.env);
+  const routingEnv = {};
+  for (const key of ["A2A_BRIDGE", "A2A_BRIDGE_PUBLIC", "A2A_PUBLIC_URL", "A2A_PORT", "A2A_HOST", "A2A_KEY"]) {
+    if (process.env[key] !== undefined) routingEnv[key] = process.env[key];
+  }
+  const exports = buildEnvExports({ ...routingEnv, ...validateEnvMap(opts.env) });
   const unsets = `unset ${STALE_PARENT_SESSION_ENV_VARS.join(" ")};`;
   return `${unsets} export A2A_SESSION=1; ${exports ? `${exports} ` : ""}if command -v caffeinate >/dev/null 2>&1; then exec caffeinate -i -t 3600 ${quoted}; else exec ${quoted}; fi`;
 }
@@ -1056,80 +1177,58 @@ function buildAgentLaunchCommand(backend, backendArgs, opts = {}) {
  * @param {string} [opts.backend]      Used for error messages only.
  * @returns {Promise<{ok:boolean,transport:"tmux"|"iterm",tmuxTarget?:string,itermGuid?:string,error?:string}>}
  */
-async function spawnAgentInPlace({
-  name,
-  cwd,
-  command,
-  backend = "",
-  parentItermGuid,
-}) {
+async function spawnAgentInPlace({ name, cwd, command, backend = "", parentItermGuid }) {
   const preference = activeProtocol();
   if (preference === "iterm" && (await probeBridgeReachable())) {
-    // Make sure we aren't doubling up — if an iTerm session is already named
-    // `name`, surface the existing guid rather than launching a duplicate.
-    const existingGuid = await itermGuidByName(name);
-    if (existingGuid) {
+    const sessions = await listITermSessionsWithOwnership();
+    const existing = findOwnedItermSessionByName(sessions, name, installToken());
+    if (existing) {
       info(`iterm session '${name}' already exists, reusing`);
-      await configureITerm2Session({ guid: existingGuid, nativeScroll: true });
+      await configureNativeScroll(existing.guid);
       invalidateITermSessionCache();
-      return { ok: true, transport: "iterm", itermGuid: existingGuid };
+      return { ok: true, created: false, transport: "iterm", itermGuid: existing.guid };
     }
-    // First agent of a team opens a new window; siblings open as tabs in
-    // that window via parent_guid. The user's complaint: each agent
-    // spawning into its own window made teams unmanageable.
+    if (sessions.some((session) => itermSessionNameMatches(session.name, name))) {
+      return { ok: false, transport: "iterm", error: `iterm session '${name}' is not owned by this install; refusing to adopt it` };
+    }
     const result = await spawnITerm2Window({
-      name,
-      cwd,
-      command,
-      installToken: installToken(),
-      where: parentItermGuid ? "tab" : "window",
-      parentGuid: parentItermGuid,
+      name, cwd, command, installToken: installToken(),
+      where: parentItermGuid ? "tab" : "window", parentGuid: parentItermGuid,
     });
-    if (result.ok) {
-      // Disable wheel-as-arrows so scrolling the spawned iTerm window
-      // scrolls iTerm's buffer instead of driving Claude Code's input
-      // cursor through prior commands. Best-effort: a config-set failure
-      // doesn't abort the spawn.
-      await configureITerm2Session({
-        guid: result.guid,
-        nativeScroll: true,
-      });
-      return { ok: true, transport: "iterm", itermGuid: result.guid };
-    }
     invalidateITermSessionCache();
-    // Bridge replied but the spawn op failed — likely a stale bridge running
-    // pre-op_spawn code. Tell the user exactly which command fixes it; fall
-    // back to tmux so they still get a working agent in the meantime.
-    info(
-      `iterm spawn failed (${result.error || "unknown"}); falling back to tmux. Run: a2a bridge iterm restart`,
-    );
+    if (result.ok) {
+      if (!viableItermGuid(result.guid)) {
+        return { ok: false, transport: "iterm", error: "iterm spawn returned no usable guid" };
+      }
+      await configureNativeScroll(result.guid);
+      return { ok: true, created: true, transport: "iterm", itermGuid: result.guid };
+    }
+    info(`iterm spawn failed (${result.error || "unknown"}); falling back to tmux. Run: a2a bridge iterm restart`);
   } else if (preference === "iterm") {
-    // Constraint 6: never silent. Tell the user the exact fix command, then
-    // gracefully fall through to tmux so the work still proceeds.
-    info(
-      "protocol=iterm but bridge unreachable; spawning via tmux. Run: a2a bridge iterm start",
-    );
+    info("protocol=iterm but bridge unreachable; spawning via tmux. Run: a2a bridge iterm start");
   }
-  // tmux path
-  const r = tmux([
-    "new-session",
-    "-d",
-    "-s",
-    name,
-    "-n",
-    name,
-    "-c",
-    cwd,
-    command,
+  const result = tmux([
+    "new-session", "-d", "-P", "-F", "#{session_name}:#{window_index}.#{pane_index}",
+    "-s", name, "-n", name, "-c", cwd, command,
   ]);
-  if (r.status !== 0) {
-    return {
-      ok: false,
-      transport: "tmux",
-      error: `tmux new-session for '${name}' (${backend || "?"}) failed: ${(r.stderr || "").trim() || "unknown"}`,
-    };
+  if (result.status !== 0) {
+    return { ok: false, transport: "tmux", error: `tmux new-session for '${name}' (${backend || "?"}) failed: ${result.error?.message || (result.stderr || "").trim() || "unknown"}` };
   }
-  return { ok: true, transport: "tmux", tmuxTarget: `${name}:0.0` };
+  const target = (result.stdout || "").trim() || tmuxTargetForSession(name);
+  if (!target) {
+    tmuxKillSession(name);
+    return { ok: false, transport: "tmux", error: `tmux session '${name}' has no live pane after spawn` };
+  }
+  return { ok: true, created: true, transport: "tmux", tmuxTarget: target };
+}
+
+async function configureNativeScroll(guid) {
+  try {
+    const result = await configureITerm2Session({ guid, nativeScroll: true });
+    if (result?.ok === false) info(`warning: could not configure iTerm scrolling: ${result.error || "unknown"}`);
+  } catch (err) {
+    info(`warning: could not configure iTerm scrolling: ${err.message || String(err)}`);
+  }
 }
 
 /**
@@ -1144,48 +1243,39 @@ async function spawnAgentInPlace({
  */
 async function probeAgentAlive(name) {
   if (await probeBridgeReachable()) {
-    if (activeProtocol() === "iterm") {
-      const guid = await itermGuidByName(name);
-      if (guid) {
-        return {
-          alive: true,
-          transport: "iterm",
-          itermGuid: guid,
-        };
-      }
-    } else {
-      // protocol=tmux: only adopt an iTerm session when it is provably ours
-      // (install-token match), mirroring spawnAgentInPlace's gating. A bare
-      // name collision with an unrelated user iTerm window must not hijack
-      // the agent onto the wrong surface.
-      let sessions = [];
-      try {
-        sessions = await listITermSessionsWithOwnership();
-      } catch {
-        /* bridge flaked between probes; fall through to tmux */
-      }
-      const owned = findOwnedItermSessionByName(
-        sessions,
-        name,
-        installToken(),
-      );
-      if (owned) {
-        return { alive: true, transport: "iterm", itermGuid: owned.guid };
-      }
+    try {
+      const sessions = await listITermSessionsWithOwnership();
+      const owned = findOwnedItermSessionByName(sessions, name, installToken());
+      if (owned) return { alive: true, transport: "iterm", itermGuid: owned.guid };
+    } catch {
+      // A failed iTerm inventory does not hide an independently live tmux pane.
     }
   }
   if (tmuxSessionExists(name)) {
-    return { alive: true, transport: "tmux", tmuxTarget: `${name}:0.0` };
+    const target = tmuxTargetForSession(name);
+    if (target) return { alive: true, transport: "tmux", tmuxTarget: target };
   }
   return { alive: false, transport: null };
 }
 
-function agentSessionAlive(agent) {
+async function agentSessionAlive(agent) {
+  if (!agent?.agentId) return false;
+  if (viableItermGuid(agent.itermGuid)) {
+    const target = await resolveLiveItermTargetForAgent(agent);
+    return Boolean(target.bridgeReachable && target.guid);
+  }
   return isAgentSessionAlive(agent, {
     bridgeReachable: probeBridgeReachable,
-    listITermSessions: listITermSessionsWithOwnership,
+    listITermSessions: async () => {
+      try {
+        return (await listITermSessionsWithOwnership()).filter((session) =>
+          session.installToken === (agent.installToken || installToken()));
+      } catch {
+        return [];
+      }
+    },
     itermSessionNameMatches,
-    tmuxSessionAlive: probeTmuxSessionAlive,
+    tmuxSessionAlive: (target) => probeTmuxSessionAlive(exactTmuxTarget(target)),
   });
 }
 
@@ -1213,7 +1303,7 @@ async function pasteStartupPromptToAgent({
       backend,
       submit: true,
     });
-    return r.ok ? { ok: true } : { ok: false, error: r.error };
+    return r.ok ? { ok: true, ...(r.warning ? { warning: r.warning } : {}) } : { ok: false, error: r.error };
   }
   if (tmuxTarget) {
     return pasteStartupPrompt(tmuxTarget, content, { backend });
@@ -1265,25 +1355,15 @@ function inlinePersonaCommandMax() {
 function readSkillBody(name) {
   validateSkillName(name);
   const userPath = join(homedir(), ".claude", "skills", name, "SKILL.md");
-  const projectPath = join(
-    process.cwd(),
-    ".claude",
-    "skills",
-    name,
-    "SKILL.md",
-  );
-  try {
-    return { body: readFileSync(userPath, "utf8"), path: userPath };
-  } catch {
-    /* fall through */
-  }
-  try {
-    return { body: readFileSync(projectPath, "utf8"), path: projectPath };
-  } catch {
-    /* fall through */
+  const projectPath = join(process.cwd(), ".claude", "skills", name, "SKILL.md");
+  for (const path of [userPath, projectPath]) {
+    try {
+      return { body: readFileSync(path, "utf8"), path };
+    } catch (err) {
+      if (err.code !== "ENOENT" && err.code !== "ENOTDIR") die(`cannot read skill '${name}' at ${path}: ${err.message}`, 1);
+    }
   }
   die(`skill '${name}' not found at ${userPath} or ${projectPath}`, 1);
-  return undefined; // unreachable — die() exits; satisfies consistent-return
 }
 
 /**
@@ -1362,10 +1442,10 @@ function preparePersonaDelivery(backend, backendArgs, personaText, opts = {}) {
     return { backendArgs: inlineArgs, startupPrompt: null, deferred: false };
 
   const inlineCommand = buildAgentLaunchCommand(backend, inlineArgs, {
+    ...opts,
     env: opts.env || {},
-    backendCommand: opts.backendCommand || null,
   });
-  if (inlineCommand.length <= max)
+  if (Buffer.byteLength(inlineCommand, "utf8") <= max)
     return { backendArgs: inlineArgs, startupPrompt: null, deferred: false };
 
   return {
@@ -1389,7 +1469,7 @@ function computeStartupPasteSettleMs(byteLength) {
 
 function startupPastePlaceholderStillPresent(target) {
   const r = tmux(["capture-pane", "-t", target, "-p", "-S", "-10"]);
-  if (r.status !== 0) return false;
+  if (r.status !== 0) return null;
   return STARTUP_PASTE_PLACEHOLDER_PATTERN.test(r.stdout || "");
 }
 
@@ -1428,7 +1508,11 @@ function pasteStartupPrompt(target, content, opts = {}) {
       STARTUP_PASTE_VERIFY_RETRY_DELAY_MS * 1.5**attempt,
     );
     sleepSync(delay);
-    if (!startupPastePlaceholderStillPresent(target)) {
+    const placeholder = startupPastePlaceholderStillPresent(target);
+    if (placeholder === null) {
+      return { ok: true, warning: "tmux paste submit could not be verified: capture-pane failed; leaving session alive" };
+    }
+    if (!placeholder) {
       submitted = true;
       break;
     }
@@ -1542,7 +1626,7 @@ function normalizeTeamAgent(
   const merged = {
     ...defaults,
     ...raw,
-    env: { ...(defaults.env || {}), ...(raw.env || {}) },
+    env: { ...validateEnvMap(defaults.env), ...validateEnvMap(raw.env) },
     args,
   };
   const agentId = normalizeDeclaredAgentId(raw.id, id, "team agent id");
@@ -1553,6 +1637,9 @@ function normalizeTeamAgent(
   // yolo resolution order: explicit per-agent → explicit team default →
   // schema-version gate. Explicit booleans (true or false) always win,
   // even false against schema_version >= 2.
+  for (const value of [defaults.yolo, raw.yolo]) {
+    if (value != null && typeof value !== "boolean") die(`agent '${agentId}': yolo must be a boolean`);
+  }
   let yolo;
   if (typeof raw.yolo === "boolean") yolo = raw.yolo;
   else if (typeof defaults.yolo === "boolean") yolo = defaults.yolo;
@@ -1575,8 +1662,10 @@ function normalizeTeamAgent(
 }
 
 function normalizeTeamSpec(ref, specPath, rawSpec, launchCwd) {
-  const defaults = rawSpec.defaults || {};
-  if (defaults && (typeof defaults !== "object" || Array.isArray(defaults)))
+  if (!rawSpec || typeof rawSpec !== "object" || Array.isArray(rawSpec))
+    die(`team spec '${ref}' must be an object`);
+  const defaults = rawSpec.defaults ?? {};
+  if (typeof defaults !== "object" || Array.isArray(defaults))
     die(`team spec '${ref}' has invalid defaults`);
   const sourceAgents = rawSpec.agents;
   if (!sourceAgents || typeof sourceAgents !== "object")
@@ -1660,72 +1749,41 @@ function loadTeamSpecFromFile(teamFile, launchCwd, nameOverride) {
 }
 
 function ngrokTunnelMatchesPort(tunnel, expectedPort) {
-  if (tunnel.proto !== "https") return false;
+  if (!tunnel || tunnel.proto !== "https") return false;
   if (expectedPort == null) return true;
+  const expected = Number(expectedPort);
+  if (!Number.isInteger(expected) || expected < 1 || expected > 65535) return false;
   const raw = String(tunnel.config?.addr || "").replace(/\/+$/, "");
-  if (raw === expectedPort) return true;
-  if (raw.endsWith(`:${expectedPort}`)) return true;
+  if (/^\d+$/.test(raw)) return Number(raw) === expected;
   try {
-    return new URL(raw).port === expectedPort;
+    const target = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    return Number(requestPort(target)) === expected;
   } catch {
     return false;
   }
 }
 
-function getNgrokUrl(port = null) {
-  return new Promise((fulfill, reject) => {
-    let settled = false;
-    const done = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      fn(value);
-    };
-    const req = _request(
-      {
-        hostname: "localhost",
-        port: 4040,
-        path: "/api/tunnels",
-        method: "GET",
-        timeout: 2000,
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          try {
-            const tunnels =
-              JSON.parse(Buffer.concat(chunks).toString()).tunnels || [];
-            const expected = port == null ? null : String(port);
-            const tunnel = tunnels.find((t) =>
-              ngrokTunnelMatchesPort(t, expected),
-            );
-            if (tunnel) {
-              done(fulfill, tunnel.public_url);
-            } else {
-              done(
-                reject,
-                new Error(
-                  expected
-                    ? `no https tunnel found for port ${expected}`
-                    : "no https tunnel found",
-                ),
-              );
-            }
-          } catch {
-            done(reject, new Error("failed to parse ngrok response"));
-          }
-        });
-      },
+async function getNgrokUrl(port = null) {
+  let response;
+  try {
+    response = await requestJsonAtUrl(
+      "GET", new URL("http://localhost:4040"), "/api/tunnels", null, null, 2000,
     );
-    req.on("timeout", () => {
-      done(reject, new Error("ngrok API timed out"));
-      req.destroy();
-    });
-    req.on("error", (err) =>
-      done(reject, new Error(`ngrok unreachable: ${err.message}`)),
-    );
-    req.end();
-  });
+  } catch (err) {
+    throw new Error(`ngrok unreachable: ${err.message}`, { cause: err });
+  }
+  if (response.status !== 200 || !Array.isArray(response.body?.tunnels)) {
+    throw new Error("invalid ngrok API response");
+  }
+  const expected = port == null ? null : String(Number(port));
+  const tunnel = response.body.tunnels.find((entry) => ngrokTunnelMatchesPort(entry, expected));
+  if (!tunnel) {
+    throw new Error(expected ? `no https tunnel found for port ${expected}` : "no https tunnel found");
+  }
+  if (typeof tunnel.public_url !== "string" || new URL(tunnel.public_url).protocol !== "https:") {
+    throw new Error("ngrok returned an invalid public URL");
+  }
+  return tunnel.public_url;
 }
 
 function sleep(ms) {
@@ -1757,12 +1815,12 @@ function startNgrok(port) {
     proc.on("error", (err) =>
       done(reject, new Error(`failed to spawn ngrok: ${err.message}`)),
     );
-    proc.on("exit", (code) => {
-      if (code !== null && code !== 0) {
+    proc.on("exit", (code, signal) => {
+      if (!settled) {
         done(
           reject,
           new Error(
-            `ngrok exited ${code}${stderr ? `: ${stderr.trim()}` : ""}`,
+            `ngrok exited ${signal || code}${stderr ? `: ${stderr.trim()}` : ""}`,
           ),
         );
       }
@@ -1770,8 +1828,9 @@ function startNgrok(port) {
     proc.unref();
     const start = Date.now();
     (async () => {
-      while (Date.now() - start < 10000) {
+      while (!settled && Date.now() - start < 10000) {
         await sleep(500);
+        if (settled) return;
         try {
           await getNgrokUrl(port);
           done(fulfill);
@@ -1794,7 +1853,8 @@ async function listAgents() {
   const { status, body } = await request("GET", "/api/a2a/agents");
   if (status !== 200 || !body?.success)
     throw new Error(`list failed: ${body?.error || `HTTP ${status}`}`);
-  return body.data?.agents || [];
+  if (!Array.isArray(body.data?.agents)) throw new Error("list failed: invalid agents response");
+  return uniqueAgentsById(body.data.agents);
 }
 
 /**
@@ -1871,7 +1931,9 @@ function cohortViewSession(cohort) {
 function joinCohortDashboard(agentName, cohort) {
   const view = cohortViewSession(cohort);
   if (!tmuxSessionExists(view)) return;
-  const r = tmux(["link-window", "-s", `${agentName}:0`, "-t", `${view}:`]);
+  const source = tmuxTargetForSession(agentName);
+  if (!source) { info(`  warning: no live pane for '${agentName}'`); return; }
+  const r = tmux(["link-window", "-s", source.split(".")[0], "-t", `${view}:`]);
   if (r.status === 0) {
     info(`  linked into dashboard '${view}'`);
   } else {
@@ -2013,21 +2075,20 @@ let _reconnectDone = false;
 function reconnectOwnedTmuxAgents() {
   if (_reconnectDone) return Promise.resolve();
   if (_reconnectInFlight) return _reconnectInFlight;
-  _reconnectInFlight = _reconnectOwnedAgentsImpl().finally(() => {
+  _reconnectInFlight = _reconnectOwnedAgentsImpl().then(() => {
     _reconnectDone = true;
+  }).finally(() => {
     _reconnectInFlight = null;
   });
   return _reconnectInFlight;
 }
 
 async function _reconnectOwnedAgentsImpl() {
+  // A remote registry must never acquire local orphan placeholders without
+  // callback routes. Explicit global start/reconnect performs both registrations.
+  if (!isLocalBridgeUrl()) return;
   await ensureBridgeRunning();
-  let existingAgents;
-  try {
-    existingAgents = await listAgents();
-  } catch {
-    existingAgents = [];
-  }
+  const existingAgents = await listAgents();
   const registered = new Set(
     existingAgents
       .map((agent) => agent?.agentId)
@@ -2044,12 +2105,13 @@ async function _reconnectOwnedAgentsImpl() {
     try {
       const { status, body } = await request("POST", "/api/a2a/register", {
         agentId: id,
-        tmuxTarget: `${id}:0.0`,
+        tmuxTarget: tmuxTargetForSession(id),
         cwd,
         description,
         installToken: token,
       });
       if (status === 200 && body?.success) {
+        registered.add(id);
         info(`${id}: auto-reconnected`);
       } else {
         info(`${id}: auto-reconnect failed: ${body?.error || `HTTP ${status}`}`);
@@ -2081,7 +2143,7 @@ async function reconnectOwnedItermAgents(registered, token) {
     const agentId = parseItermAgentId(s.name);
     if (!agentId) continue;
     if (registered.has(agentId)) continue;
-    const description = `a2a reconnect (iterm): ${agentId}`;
+    const description = inferCohortDescription(agentId) || `a2a reconnect (iterm): ${agentId}`;
     try {
       const { status, body } = await request("POST", "/api/a2a/register", {
         agentId,
@@ -2094,6 +2156,7 @@ async function reconnectOwnedItermAgents(registered, token) {
         installToken: token,
       });
       if (status === 200 && body?.success) {
+        registered.add(agentId);
         info(`${agentId}: auto-reconnected (iterm)`);
       } else {
         info(
@@ -2129,7 +2192,7 @@ function parseItermAgentId(sessionName) {
 }
 
 async function restartRegisteredAgentSession(agent) {
-  if (!agent || agent.bridgeUrl) {
+  if (!agent || agentIsRemote(agent)) {
     return { ok: true, restarted: false };
   }
   const backend = agent.backend || "claude";
@@ -2147,7 +2210,7 @@ async function restartRegisteredAgentSession(agent) {
     return await restartViaIterm({ agent, backend, backendCommand, backendArgs });
   }
 
-  if (tmuxSessionExists(agent.agentId)) {
+  if (probeTmuxSessionAlive(exactTmuxTarget(agent.tmuxTarget || agent.agentId))) {
     return { ok: true, restarted: false };
   }
   return await restartViaTmux({ agent, backend, backendCommand, backendArgs });
@@ -2171,7 +2234,8 @@ async function restartViaIterm({ agent, backend, backendCommand, backendArgs }) 
         "iterm bridge unreachable — start it with: a2a bridge iterm start",
     };
   }
-  const sessions = await listITermSessionsWithOwnership();
+  const sessions = (await listITermSessionsWithOwnership()).filter((session) =>
+    session.guid === agent.itermGuid || session.installToken === (agent.installToken || installToken()));
   const { storedGuidLive, liveGuid } = resolveItermRestartSession(
     agent,
     sessions,
@@ -2199,7 +2263,7 @@ async function restartViaIterm({ agent, backend, backendCommand, backendArgs }) 
     name: agent.agentId,
     cwd,
     command,
-    installToken: installToken(),
+    installToken: agent.installToken || installToken(),
   });
   if (!spawned.ok) {
     return {
@@ -2217,7 +2281,8 @@ async function restartViaIterm({ agent, backend, backendCommand, backendArgs }) 
       error: "iterm spawn returned no guid",
     };
   }
-  await configureITerm2Session({ guid: newGuid, nativeScroll: true });
+  await configureNativeScroll(newGuid);
+  invalidateITermSessionCache();
   if (agent.startupPrompt) {
     const pasted = await pasteStartupPromptToAgent({
       itermGuid: newGuid,
@@ -2235,12 +2300,20 @@ async function restartViaIterm({ agent, backend, backendCommand, backendArgs }) 
     }
   }
   invalidateITermSessionCache();
-  return await reregisterItermAgent(agent, newGuid);
+  const registered = await reregisterItermAgent(agent, newGuid);
+  if (!registered.ok) {
+    const closed = await closeITerm2Session(newGuid);
+    if (!closed.ok && !isBenignSessionGoneError(closed.error)) {
+      info(`warning: failed to close unregistered iTerm session ${newGuid}: ${closed.error}`);
+    }
+    invalidateITermSessionCache();
+  }
+  return registered;
 }
 
 async function reregisterItermAgent(agent, newGuid) {
   try {
-    const { status, body } = await request("POST", "/api/a2a/register", {
+    const { status, body } = await registerLocalAgent({
       agentId: agent.agentId,
       tmuxTarget: agent.tmuxTarget || `${agent.agentId}:0.0`,
       itermGuid: newGuid,
@@ -2251,8 +2324,9 @@ async function reregisterItermAgent(agent, newGuid) {
       ...(typeof agent.backendCommand === "string" && agent.backendCommand
         ? { backendCommand: agent.backendCommand }
         : {}),
-      backendEnv: agent.backendEnv,
-      installToken: installToken(),
+      backendEnv: agentEnv(agent.agentId, agent.backendEnv || {}),
+      installToken: agent.installToken || installToken(),
+      ...(agent.bridgeUrl ? { bridgeUrl: agent.bridgeUrl } : {}),
       ...(typeof agent.yolo === "boolean" ? { yolo: agent.yolo } : {}),
       ...(agent.startupPrompt
         ? { startupPrompt: agent.startupPrompt }
@@ -2272,60 +2346,81 @@ async function reregisterItermAgent(agent, newGuid) {
       error: `re-register failed: ${err.message}`,
     };
   }
+  agent.itermGuid = newGuid;
   invalidateITermSessionCache();
   return { ok: true, restarted: true };
 }
 
-function resolveLiveItermTargetForAgent(agent) {
-  return resolveLiveItermTarget(agent, {
-    probeBridgeReachable,
-    itermGuidByName,
-    reregisterItermAgent,
-  });
+async function resolveLiveItermTargetForAgent(agent) {
+  if (!agent?.agentId || agentIsRemote(agent)) return { guid: null, bridgeReachable: false };
+  const reachable = await probeBridgeReachable();
+  const stored = viableItermGuid(agent.itermGuid) ? agent.itermGuid.trim() : null;
+  if (!reachable) return { guid: stored, bridgeReachable: false };
+  const sessions = await listITermSessionsWithOwnership();
+  const storedLive = stored && sessions.some((session) => session.guid === stored);
+  if (storedLive) return { guid: stored, bridgeReachable: true };
+  const owned = findOwnedItermSessionByName(sessions, agent.agentId, agent.installToken || installToken());
+  if (!owned) return { guid: null, bridgeReachable: true };
+  if (owned.guid !== stored) {
+    const result = await reregisterItermAgent(agent, owned.guid);
+    if (!result.ok) throw new Error(result.error || "iTerm re-registration failed");
+  }
+  return { guid: owned.guid, bridgeReachable: true };
 }
 
 async function restartViaTmux({ agent, backend, backendCommand, backendArgs }) {
-  const r = tmux([
-    "new-session",
-    "-d",
-    "-s",
-    agent.agentId,
-    "-n",
-    agent.agentId,
-    "-c",
-    agent.cwd || process.cwd(),
+  // A manual registration can point into a shared session. Never replace that
+  // session or silently redirect its missing pane to a new agent-named session.
+  const recorded = agent.tmuxTarget || `${agent.agentId}:0.0`;
+  const sessionName = recorded.replace(/^=/, "").split(":")[0];
+  if (sessionName !== agent.agentId || tmuxSessionExists(agent.agentId)) {
+    return { ok: false, restarted: false, error: `registered pane '${recorded}' is unavailable; refusing to replace an existing or shared session` };
+  }
+  const result = tmux([
+    "new-session", "-d", "-P", "-F", "#{session_name}:#{window_index}.#{pane_index}",
+    "-s", agent.agentId, "-n", agent.agentId, "-c", agent.cwd || process.cwd(),
     buildAgentLaunchCommand(backend, backendArgs, {
-      env: agentEnv(agent.agentId, agent.backendEnv || {}),
-      backendCommand,
+      env: agentEnv(agent.agentId, agent.backendEnv || {}), backendCommand,
     }),
   ]);
-  if (r.status !== 0) {
-    return {
-      ok: false,
-      restarted: false,
-      error: (r.stderr || "").trim() || "tmux new-session failed",
-    };
+  if (result.status !== 0) {
+    return { ok: false, restarted: false, error: result.error?.message || (result.stderr || "").trim() || "tmux new-session failed" };
   }
+  const target = (result.stdout || "").trim() || tmuxTargetForSession(agent.agentId);
   await sleep(500);
-  if (!tmuxSessionExists(agent.agentId)) {
-    return {
-      ok: false,
-      restarted: true,
-      error: sessionStartupError(agent.agentId, backend),
-    };
+  if (!target || !probeTmuxSessionAlive(exactTmuxTarget(target))) {
+    return { ok: false, restarted: true, error: sessionStartupError(agent.agentId, backend) };
   }
-  tmuxSetInstallToken(agent.agentId, installToken());
+  const token = agent.installToken || installToken();
+  const stamped = tmuxSetInstallToken(agent.agentId, token);
+  if (!stamped.ok) {
+    tmuxKillSession(agent.agentId);
+    return { ok: false, restarted: true, error: `could not mark session ownership: ${stamped.stderr}` };
+  }
   if (agent.startupPrompt) {
-    const pasted = pasteStartupPrompt(`${agent.agentId}:0.0`, agent.startupPrompt, {
-      backend,
-    });
+    const pasted = pasteStartupPrompt(target, agent.startupPrompt, { backend });
     if (!pasted.ok) {
-      return {
-        ok: false,
-        restarted: true,
-        error: `startup prompt paste failed: ${pasted.error}`,
-      };
+      tmuxKillSession(agent.agentId);
+      return { ok: false, restarted: true, error: `startup prompt paste failed: ${pasted.error}` };
     }
+    if (pasted.warning) info(`${agent.agentId}: ${pasted.warning}`);
+  }
+  try {
+    const { status, body } = await registerLocalAgent({
+      agentId: agent.agentId, tmuxTarget: target,
+      description: agent.description, cwd: agent.cwd, backend,
+      backendArgs, ...backendCommandPayload(backendCommand),
+      backendEnv: agentEnv(agent.agentId, agent.backendEnv || {}),
+      installToken: token,
+      ...(typeof agent.yolo === "boolean" ? { yolo: agent.yolo } : {}),
+      ...(typeof agent.startupPrompt === "string" ? { startupPrompt: agent.startupPrompt } : {}),
+      ...(agent.bridgeUrl ? { bridgeUrl: agent.bridgeUrl } : {}),
+    });
+    if (status !== 200 || !body?.success) throw new Error(body?.error || `HTTP ${status}`);
+    agent.tmuxTarget = target;
+  } catch (err) {
+    tmuxKillSession(agent.agentId);
+    return { ok: false, restarted: true, error: `re-register failed: ${err.message}` };
   }
   return { ok: true, restarted: true };
 }
@@ -2407,43 +2502,31 @@ async function sendNormalizedEnvelope(envelope) {
     typeof extras.source === "string" && extras.source.trim()
       ? extras.source.trim()
       : resolvedSource;
+  delete extras.source;
   let sentCount = 0;
   let failedCount = 0;
-  for (const toId of recipients) {
-    const targetAgent = agentMap.get(toId);
-    if (
-      targetAgent &&
-      !targetAgent.bridgeUrl &&
-      !(await agentSessionAlive(targetAgent))
-    ) {
-      info(`${toId} session dead, attempting restart...`);
-      const restarted = await restartRegisteredAgentSession(targetAgent);
-      if (restarted.ok && restarted.restarted) info(`${toId} restarted`);
-      else if (!restarted.ok)
-        info(`restart failed for ${toId}: ${restarted.error}`);
-    }
-    const { status, body } = await request("POST", "/api/a2a/send", {
-      to: toId,
-      from: fromId,
-      origin,
-      body: envelope.content,
-      action,
-      ...(source ? { source } : {}),
-      ...(replyTo ? { replyTo } : {}),
-      ...extras,
-    });
-    if (status !== 200 || !body?.success) {
-      // A single wedged recipient (e.g. a backend stuck on a provider error
-      // that leaves the paste placeholder un-submitted) must NOT abort the
-      // whole fan-out. Skip it and keep delivering to the rest of the queue.
+  for (const toId of [...new Set(recipients)]) {
+    try {
+      const targetAgent = agentMap.get(toId);
+      if (targetAgent && !agentIsRemote(targetAgent) && !(await agentSessionAlive(targetAgent))) {
+        info(`${toId} session dead, attempting restart...`);
+        const restarted = await restartRegisteredAgentSession(targetAgent);
+        if (!restarted.ok) throw new Error(`restart failed: ${restarted.error}`);
+        if (restarted.restarted) info(`${toId} restarted`);
+      }
+      const { status, body } = await request("POST", "/api/a2a/send", {
+        ...extras,
+        to: toId, from: fromId, origin, body: envelope.content, action,
+        ...(source ? { source } : {}),
+        ...(replyTo ? { replyTo } : {}),
+      });
+      if (status !== 200 || !body?.success) throw new Error(body?.error || `HTTP ${status}`);
+      sentCount++;
+      info(`${fromId} -> ${toId} [${origin}/${action}] (${body.data?.bytes ?? "?"} bytes)`);
+    } catch (err) {
       failedCount++;
-      info(`send failed: ${body?.error || `HTTP ${status}`} (skipped ${toId})`);
-      continue;
+      info(`send failed: ${err.message || String(err)} (skipped ${toId})`);
     }
-    sentCount++;
-    info(
-      `${fromId} -> ${toId} [${origin}/${action}] (${body.data?.bytes ?? "?"} bytes)`,
-    );
   }
   // Only fail the command when nothing was delivered at all. A single-recipient
   // send that fails still reports a non-zero exit, while a broadcast that
@@ -2469,11 +2552,13 @@ async function doSend({ flags, kv, positional }, action = "message") {
 }
 
 function isProcessAlive(pid) {
+  const value = Number(pid);
+  if (!Number.isSafeInteger(value) || value <= 0) return false;
   try {
-    process.kill(pid, 0);
+    process.kill(value, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return err?.code === "EPERM";
   }
 }
 
@@ -2525,7 +2610,7 @@ function psArgLooksLikeServerScript(arg) {
   if (basename(cleaned) !== serverBase) return false;
   const expected = canonicalExistingPath(SERVER_SCRIPT);
   const actual = canonicalExistingPath(cleaned);
-  return actual === expected || cleaned.endsWith(`/${serverBase}`) || cleaned === serverBase;
+  return actual === expected;
 }
 /**
  * Checks whether a live pid appears to be an a2a bridge process.
@@ -2536,16 +2621,21 @@ function psArgLooksLikeServerScript(arg) {
  *   pidLooksLikeBridge(4576);
  */
 function pidLooksLikeBridge(pid) {
-  if (!pid || !isProcessAlive(pid)) return false;
-  const r = spawnSync("ps", ["-p", String(pid), "-o", "args="], {
-    encoding: "utf8",
-  });
+  if (!isProcessAlive(pid)) return false;
+  const r = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8" });
   if (r.status !== 0) return false;
   const args = (r.stdout || "").trim();
-  if (!args) return false;
-  if (args.includes("a2a-bridge")) return true;
-  const parts = args.split(/\s+/).filter(Boolean);
-  return parts.some((part) => psArgLooksLikeServerScript(part));
+  if (args === "a2a-bridge") return true;
+  // Only a Node invocation of this install's script is evidence of ownership.
+  // Substrings in another process's arguments are not permission to signal it.
+  const parts = args.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) || [];
+  if (!/^node(?:js)?(?:\.exe)?$/.test(basename(stripShellishQuotes(parts[0])))) return false;
+  for (const arg of parts.slice(1)) {
+    if (["-e", "--eval", "-p", "--print"].includes(arg) || /^--(?:eval|print)=/.test(arg)) return false;
+    if (arg.startsWith("-")) continue;
+    return psArgLooksLikeServerScript(arg);
+  }
+  return false;
 }
 /**
  * Finds process ids listening on the configured bridge port.
@@ -2555,6 +2645,7 @@ function pidLooksLikeBridge(pid) {
  *   bridgeListenerPids();
  */
 function bridgeListenerPids() {
+  if (!isLocalBridgeUrl()) return [];
   let base;
   try {
     base = new URL(bridgeUrl());
@@ -2603,62 +2694,26 @@ function bridgeListenerPid() {
  *   stopBridgePid(4576, readPid());
  */
 function stopBridgePid(pid, expectedPidFilePid = null) {
-  process.kill(pid, "SIGTERM");
-  info(`sent SIGTERM to bridge (pid ${pid})`);
-  if (expectedPidFilePid == null || expectedPidFilePid === pid) {
-    removePid(pid);
+  const value = Number(pid);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid bridge pid");
+  try {
+    process.kill(value, "SIGTERM");
+    info(`sent SIGTERM to bridge (pid ${value})`);
+  } catch (err) {
+    if (err?.code !== "ESRCH") throw err;
   }
+  if (expectedPidFilePid == null || Number(expectedPidFilePid) === value) removePid(value);
 }
 
-function bridgeHealthy() {
-  return new Promise((fulfill) => {
-    let base;
-    try {
-      base = new URL(bridgeUrl());
-    } catch {
-      fulfill(false);
-      return;
-    }
-    let transport;
-    try {
-      transport = transportForUrl(base);
-    } catch {
-      fulfill(false);
-      return;
-    }
-    const req = transport(
-      {
-        method: "GET",
-        hostname: base.hostname,
-        port: requestPort(base),
-        path: joinedUrlPath(base, "/health"),
-        timeout: 2000,
-      },
-      (res) => {
-        let raw = "";
-        res.on("data", (c) => {
-          raw += c;
-        });
-        res.on("end", () => {
-          try {
-            fulfill(
-              res.statusCode >= 200 &&
-                res.statusCode < 300 &&
-                JSON.parse(raw).success === true,
-            );
-          } catch {
-            fulfill(false);
-          }
-        });
-      },
+async function bridgeHealthy(timeoutMs = 2000) {
+  try {
+    const { status, body } = await requestJsonAtUrl(
+      "GET", new URL(bridgeUrl()), "/health", null, null, timeoutMs,
     );
-    req.on("error", () => fulfill(false));
-    req.on("timeout", () => {
-      req.destroy();
-      fulfill(false);
-    });
-    req.end();
-  });
+    return status >= 200 && status < 300 && body?.success === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -2678,6 +2733,7 @@ function bridgeHealthy() {
  *   cmdCompletion(["bash"]);
  */
 function cmdCompletion(args) {
+  if (args.length > 1) die("completion accepts one shell name");
   const shell = (args[0] || "").toLowerCase();
   if (shell !== "bash" && shell !== "zsh") {
     die(
@@ -2702,6 +2758,7 @@ function cmdCompletion(args) {
   // delivered to the consumer by the time the pipe is torn down.
   process.stdout.on("error", (err) => {
     if (err && err.code === "EPIPE") process.exit(0);
+    else die(`could not write completion script: ${err?.message || String(err)}`, 1);
   });
   process.stdout.write(content);
 }
@@ -2773,6 +2830,7 @@ function parseRawCommandArgs(args) {
     }
     if (key === "to" || key === "target") {
       const read = readRawFlagValue(args, i, key, eqIdx);
+      if (!read.value) die(`--${key} requires a non-empty target`, 1);
       selectors.push(read.value);
       i = read.nextIndex;
       continue;
@@ -2790,7 +2848,7 @@ function parseRawCommandArgs(args) {
     selectors.push(key);
     i++;
   }
-  const positionalContent = positional.join(" ").trim();
+  const positionalContent = positional.join(" ");
   if (content !== null && positionalContent) {
     die("raw content specified more than once", 1);
   }
@@ -2813,9 +2871,7 @@ async function resolveRawInputTargets(selectors) {
   await ensureBridgeRunning();
   await reconnectOwnedTmuxAgents();
   const agents = await listAgents();
-  const selfId = isDashboardSession(currentTmuxSession())
-    ? null
-    : currentTmuxSession();
+  const selfId = currentAgentId();
   const resolved = [];
   if (selectors.length === 0) {
     const inferred = inferPeer(agents, selfId);
@@ -2849,51 +2905,10 @@ async function resolveRawInputTargets(selectors) {
  *   await ensureRawInputAgentLive(agent);
  */
 async function ensureRawInputAgentLive(agent) {
-  if (!shouldReviveAgentInTmux(agent)) return;
-  if (tmuxSessionExists(agent.agentId)) return;
-  const backend = agent.backend || "claude";
-  const backendCommand =
-    typeof agent.backendCommand === "string" && agent.backendCommand
-      ? agent.backendCommand
-      : null;
-  const backendArgs = Array.isArray(agent.backendArgs) ? agent.backendArgs : [];
-  const cmd = buildAgentLaunchCommand(backend, backendArgs, {
-    env: agentEnv(agent.agentId, agent.backendEnv || {}),
-    backendCommand,
-  });
-  const r = tmux([
-    "new-session",
-    "-d",
-    "-s",
-    agent.agentId,
-    "-n",
-    agent.agentId,
-    "-c",
-    agent.cwd || process.cwd(),
-    cmd,
-  ]);
-  if (r.status !== 0) {
-    die(
-      `raw target '${agent.agentId}' is dead and restart failed: ${(r.stderr || "").trim() || "unknown"}`,
-      1,
-    );
-  }
-  await sleep(500);
-  if (!tmuxSessionExists(agent.agentId)) {
-    die(`raw target '${agent.agentId}' exited during restart`, 1);
-  }
-  tmuxSetInstallToken(agent.agentId, installToken());
-  if (agent.startupPrompt) {
-    const pasted = pasteStartupPrompt(`${agent.agentId}:0.0`, agent.startupPrompt, {
-      backend,
-    });
-    if (!pasted.ok) {
-      die(
-        `raw target '${agent.agentId}' restarted but startup prompt paste failed: ${pasted.error}`,
-        1,
-      );
-    }
-  }
+  if (!agent || agentIsRemote(agent)) return;
+  if (await agentSessionAlive(agent)) return;
+  const result = await restartRegisteredAgentSession(agent);
+  if (!result.ok) die(`raw target '${agent.agentId}' is dead and restart failed: ${result.error}`, 1);
 }
 /**
  * Opens an agent session after raw input delivery.
@@ -2923,10 +2938,12 @@ async function cmdRaw(args) {
   if (!parsed.content) die("raw input body is required", 1);
   const targets = await resolveRawInputTargets(parsed.selectors);
   if (targets.length === 0) die("no raw input targets resolved", 1);
+  const remote = targets.find((target) => agentIsRemote(target.agent));
+  if (remote) die(`raw input cannot target remote agent '${remote.id}'; raw input requires a local pane`, 1);
   let firstLocalTarget = null;
   for (const target of targets) {
     const { agent } = target;
-    if (agent?.bridgeUrl) {
+    if (agentIsRemote(agent)) {
       die(
         `raw input cannot target remote agent '${target.id}'; raw input requires a local pane`,
         1,
@@ -2962,12 +2979,19 @@ async function cmdRaw(args) {
     info(
       `raw -> ${target.id} via ${delivery.transport}${parsed.submit ? "" : " (not submitted)"} (${delivery.bytes ?? "?"} bytes)`,
     );
-    if (firstLocalTarget === null) firstLocalTarget = sessionName;
+    if (firstLocalTarget === null) {
+      firstLocalTarget = { transport: delivery.transport, sessionName, guid: agent?.itermGuid, id: target.id };
+    }
   }
   if (parsed.open && firstLocalTarget) {
-    // Honour --open for tmux targets only; iTerm sessions are foregrounded
-    // by the bridge spawn path itself.
-    if (tmuxSessionExists(firstLocalTarget)) openRawInputTarget(firstLocalTarget);
+    if (firstLocalTarget.transport === "iterm") {
+      const guid = firstLocalTarget.guid || await itermGuidByName(firstLocalTarget.id);
+      if (!guid) die(`no live iterm session for '${firstLocalTarget.id}'`, 1);
+      const result = await focusITerm2Session(guid);
+      if (!result.ok) die(`iterm open failed: ${result.error}`, 1);
+    } else {
+      openRawInputTarget(firstLocalTarget.sessionName);
+    }
   }
 }
 
@@ -2978,17 +3002,26 @@ async function cmdRaw(args) {
  * @returns {Promise<string>}
  */
 function readStdinFully() {
-  return new Promise((settle, reject) => {
-    if (process.stdin.isTTY) {
-      reject(new Error("no stdin available (stdin is a TTY)"));
-      return;
-    }
+  return new Promise((fulfill, reject) => {
+    const input = process.stdin;
+    if (input.isTTY) { reject(new Error("no stdin available (stdin is a TTY)")); return; }
+    if (input.readableEnded) { fulfill(""); return; }
+    if (input.destroyed) { reject(new Error("stdin is closed")); return; }
     const chunks = [];
-    process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.once("end", () =>
-      settle(Buffer.concat(chunks).toString("utf8")),
-    );
-    process.stdin.once("error", (err) => reject(err));
+    const cleanup = () => {
+      input.removeListener("data", onData);
+      input.removeListener("end", onEnd);
+      input.removeListener("error", onError);
+      input.removeListener("close", onClose);
+    };
+    const onData = (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const onEnd = () => { cleanup(); fulfill(Buffer.concat(chunks).toString("utf8")); };
+    const onError = (error) => { cleanup(); reject(error); };
+    const onClose = () => { cleanup(); reject(new Error("stdin closed before end of input")); };
+    input.on("data", onData);
+    input.once("end", onEnd);
+    input.once("error", onError);
+    input.once("close", onClose);
   });
 }
 
@@ -3001,6 +3034,7 @@ function readStdinFully() {
 async function resolveSequenceTargets(parsed) {
   if (parsed.broadcast) {
     await ensureBridgeRunning();
+    await reconnectOwnedTmuxAgents();
     const agents = await listAgents();
     const selfId = isDashboardSession(currentTmuxSession())
       ? null
@@ -3039,24 +3073,17 @@ async function runSequenceCommand(parsed) {
   const targets = await resolveSequenceTargets(parsed);
   if (targets.length === 0) die("no command targets resolved", 1);
 
-  const selfId = isDashboardSession(currentTmuxSession())
-    ? null
-    : currentTmuxSession();
+  const selfId = currentAgentId();
 
+  const plans = [];
   for (const target of targets) {
     const { agent } = target;
-    if (agent?.bridgeUrl) {
+    if (agentIsRemote(agent)) {
       die(
         `command sequences cannot target remote agent '${target.id}'; sequence delivery requires a local pane`,
         1,
       );
     }
-    if (agent) {
-      await ensureRawInputAgentLive(agent);
-    }
-    const tmuxTarget = agent?.tmuxTarget || `${target.id}:0.0`;
-    // No global tmux preflight — transport-router picks per-recipient.
-
     /** @type {ReturnType<typeof compileSequence>} */
     let compiled;
     try {
@@ -3076,6 +3103,13 @@ async function runSequenceCommand(parsed) {
       die(`--command parse error: ${err.message}`, 1);
     }
 
+    plans.push({ target, compiled });
+  }
+
+  for (const { target, compiled } of plans) {
+    const { agent } = target;
+    if (agent) await ensureRawInputAgentLive(agent);
+    const tmuxTarget = agent?.tmuxTarget || `${target.id}:0.0`;
     const delivery = await deliverSequenceViaActiveProtocol({
       agentName: target.id,
       tmuxTarget,
@@ -3154,53 +3188,41 @@ function runIterm2BridgeLauncher(action) {
 }
 
 async function cmdBridge(args) {
-  // First peel off the target selector: `a2a bridge iterm <action>` or
-  // `a2a bridge all <action>`. Without a target, the action defaults to the
-  // HTTP bridge for back-compat with the pre-iterm syntax.
   const target = (args[0] || "").toLowerCase();
   if (target === "iterm" || target === "iterm2") {
-    const action = (args[1] || "status").toLowerCase();
-    process.exit(runIterm2BridgeLauncher(action));
+    if (args.length > 2) die("bridge iterm accepts one action");
+    const status = runIterm2BridgeLauncher((args[1] || "status").toLowerCase());
+    if (status !== 0) process.exitCode = status;
+    return;
   }
   if (target === "all") {
+    if (args.length > 2) die("bridge all accepts one action");
     const action = (args[1] || "status").toLowerCase();
-    if (action === "start") {
-      await cmdBridge(["start"]);
-      runIterm2BridgeLauncher("start");
-      return;
+    if (!["start", "stop", "restart", "status"].includes(action)) die(`unknown bridge action '${action}' for 'all'`);
+    let failed = false;
+    try {
+      if (action === "restart") {
+        await cmdBridge(["stop"]);
+        await cmdBridge(["start"]);
+      } else {
+        await cmdBridge([action]);
+      }
+    } catch (err) {
+      info(`HTTP bridge ${action} failed: ${err.message}`);
+      failed = true;
     }
-    if (action === "stop") {
-      await cmdBridge(["stop"]);
-      runIterm2BridgeLauncher("stop");
-      return;
-    }
-    if (action === "restart") {
-      // The HTTP dispatcher below has no native restart; compose stop+start
-      // the same way the other `all` actions compose per-surface commands.
-      await cmdBridge(["stop"]);
-      await cmdBridge(["start"]);
-      runIterm2BridgeLauncher("restart");
-      return;
-    }
-    if (action === "status") {
-      await cmdBridge(["status"]);
-      runIterm2BridgeLauncher("status");
-      return;
-    }
-    die(`unknown bridge action '${action}' for 'all'`);
+    const status = runIterm2BridgeLauncher(action);
+    if (failed || status !== 0) process.exitCode = status || 1;
+    return;
   }
-
-  const sub = (args[0] || "start").toLowerCase();
-  if (sub === "status") {
-    const pid = readPid();
-    const alive = pid && isProcessAlive(pid);
-    const healthy = await bridgeHealthy();
-    if (healthy) {
-      const listenerPid = pid || bridgeListenerPid();
-      info(
-        `bridge running${listenerPid ? ` (pid ${listenerPid})` : ""} at ${bridgeUrl()}`,
-      );
-    } else if (alive) {
+  if (args.length > 1) die("bridge accepts one action");
+  const action = target || "start";
+  if (action === "status") {
+    const pid = isLocalBridgeUrl() ? readPid() : null;
+    if (await bridgeHealthy()) {
+      const listener = pid && pidLooksLikeBridge(pid) ? pid : bridgeListenerPid();
+      info(`bridge running${listener ? ` (pid ${listener})` : ""} at ${bridgeUrl()}`);
+    } else if (pid && isProcessAlive(pid)) {
       info(`bridge pid file points at live pid ${pid}, but /health is not responding`);
     } else {
       info("bridge is not running");
@@ -3208,76 +3230,34 @@ async function cmdBridge(args) {
     }
     return;
   }
-  if (sub === "stop") {
-    const pid = readPid();
-    if (pid && pidLooksLikeBridge(pid)) {
-      stopBridgePid(pid, pid);
+  if (action === "stop") {
+    if (!isLocalBridgeUrl()) throw new Error(`cannot stop remote bridge at ${bridgeUrl()} from this machine`);
+    const recorded = readPid();
+    const pid = recorded && pidLooksLikeBridge(recorded) ? recorded : bridgeListenerPid();
+    if (pid) {
+      stopBridgePid(pid, recorded);
+      const deadline = Date.now() + 5000;
+      while (isProcessAlive(pid) && Date.now() < deadline) await sleep(100);
+      if (isProcessAlive(pid)) throw new Error(`bridge pid ${pid} did not stop`);
       return;
     }
-    if (pid && isProcessAlive(pid)) {
-      info(
-        `pid ${pid} is not recognized as this a2a bridge; leaving pid file intact`,
-      );
-    } else if (pid) {
-      info(`removing stale bridge pid file for dead pid ${pid}`);
-      removePid(pid);
+    if (recorded && isProcessAlive(recorded)) {
+      info(`pid ${recorded} is not recognized as this a2a bridge; leaving pid file intact`);
+    } else if (recorded) {
+      removePid(recorded);
     }
-    if (await bridgeHealthy()) {
-      const listenerPid = bridgeListenerPid();
-      if (listenerPid) {
-        stopBridgePid(listenerPid, pid || null);
-        if (pid && pid !== listenerPid) {
-          info(
-            `bridge.pid still points at unmanaged pid ${pid}; leaving it intact`,
-          );
-        }
-        return;
-      }
-      info(
-        `bridge is healthy at ${bridgeUrl()}, but its pid is unmanaged; stop the listener manually or restore bridge.pid`,
-      );
-      return;
-    }
+    if (await bridgeHealthy()) throw new Error(`bridge is healthy at ${bridgeUrl()}, but its pid is unmanaged; stop the listener manually or restore bridge.pid`);
     info("bridge is not running");
     return;
   }
-  if (sub === "start" || sub === "bridge") {
-    if (await bridgeHealthy()) {
-      const listenerPid = readPid() || bridgeListenerPid();
-      info(
-        `bridge already running${listenerPid ? ` (pid ${listenerPid})` : ""} at ${bridgeUrl()}`,
-      );
-      return;
-    }
-    const stale = readPid();
-    if (stale && pidLooksLikeBridge(stale)) {
-      info(`killing stale bridge (pid ${stale})`);
-      process.kill(stale, "SIGTERM");
-      spawnSync("sleep", ["0.5"]);
-    } else if (stale && isProcessAlive(stale)) {
-      info(`stale pid ${stale} is not an a2a bridge; leaving it alone`);
-    } else if (stale) {
-      removePid(stale);
-    }
-    const KEY = activeKey();
-    const child = spawn(process.execPath, [SERVER_SCRIPT], {
-      detached: true,
-      stdio: ["ignore", "ignore", "ignore"],
-      env: { ...process.env, ...(KEY ? { A2A_KEY: KEY } : {}) },
-    });
-    child.unref();
-    for (let i = 0; i < 20; i++) {
-      await new Promise((r) => setTimeout(r, 250));
-      if (await bridgeHealthy()) {
-        info(
-          `bridge started (pid ${readPid() || child.pid}) at ${bridgeUrl()}`,
-        );
-        return;
-      }
-    }
-    die("bridge failed to start within 5s", 1);
+  if (action === "start" || action === "bridge") {
+    const healthy = await bridgeHealthy();
+    if (!healthy) await ensureBridgeRunning();
+    const pid = isLocalBridgeUrl() ? bridgeListenerPid() || readPid() : null;
+    info(`bridge ${healthy ? "already running" : "started"}${pid ? ` (pid ${pid})` : ""} at ${bridgeUrl()}`);
+    return;
   }
-  die(`unknown bridge subcommand '${sub}' (expected: start, stop, status)`);
+  die(`unknown bridge subcommand '${action}' (expected: start, stop, status)`);
 }
 
 async function startSingle(name, backend, backendArgs, opts = {}) {
@@ -3289,6 +3269,7 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
   let createdSession = false;
   const cwd = opts.cwd || process.cwd();
   const env = opts.env || {};
+  const reusePrompt = opts.startupPrompt || (opts.personaText ? buildPersonaStartupMessage(opts.personaText) : null);
   /** @type {string|null} */
   let tmuxTarget;
   /** @type {string|null} */
@@ -3321,18 +3302,18 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
         `  to apply, restart: a2a kill ${name} && a2a start ${name} ${backendArgs.map(shellQuote).join(" ")}`,
       );
     }
-    if (opts.startupPrompt) {
+    if (reusePrompt) {
       // Paste the new prompt into the running process so the agent
-      // actually receives the role/skills the caller asked for. If the
-      // backend died in-pane, the paste lands in the shell — surfaced
-      // via the error branch and discoverable via `a2a peek`.
+      // receives the role/skills the caller asked for even when its launch
+      // command cannot change. Transport success does not by itself prove
+      // that the backend consumed the prompt; inspect it with `a2a peek`.
       const pasted = await pasteStartupPromptToAgent({
         tmuxTarget,
         itermGuid,
-        content: opts.startupPrompt,
+        content: reusePrompt,
         backend,
       });
-      if (pasted.ok) info(`  startup prompt pasted into the running process`);
+      if (pasted.ok) info(pasted.warning ? `  warning: ${pasted.warning}` : `  startup prompt pasted into the running process`);
       else info(`  warning: startup prompt paste failed: ${pasted.error}`);
     }
   } else {
@@ -3342,7 +3323,7 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
     });
     const spawned = await spawnAgentInPlace({ name, cwd, command, backend });
     if (!spawned.ok) die(spawned.error || "spawn failed", 1);
-    createdSession = true;
+    createdSession = spawned.created !== false;
     transport = spawned.transport;
     tmuxTarget = spawned.tmuxTarget || null;
     itermGuid = spawned.itermGuid || null;
@@ -3353,29 +3334,30 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
       // Pin install token onto the session so list/kill can prove this
       // session is a2a-owned even if the bridge / cache later drift.
       tmuxSetInstallToken(name, installToken());
-      spawnSync("sleep", ["1"]);
+      await sleep(1000);
       ensureSessionSurvivedStart(name, backend);
     } else {
       // Plain $SHELL (no -l) starts fast; 1s parity with tmux is enough.
-      spawnSync("sleep", ["1"]);
+      await sleep(1000);
     }
-    if (opts.startupPrompt) {
+    const initialPrompt = createdSession ? opts.startupPrompt : reusePrompt;
+    if (initialPrompt) {
       const pasted = await pasteStartupPromptToAgent({
         tmuxTarget,
         itermGuid,
-        content: opts.startupPrompt,
+        content: initialPrompt,
         backend,
       });
       if (!pasted.ok) {
         info(`startup prompt paste failed: ${pasted.error}`);
         info(`killing orphan '${name}'`);
-        if (transport === "iterm" && itermGuid) {
-          await closeITerm2Session(itermGuid);
-        } else if (transport === "tmux") {
-          tmux(["kill-session", "-t", name]);
+        if (createdSession) {
+          if (transport === "iterm" && itermGuid) await closeITerm2Session(itermGuid);
+          else if (transport === "tmux") tmux(["kill-session", "-t", name]);
         }
         die(`startup prompt paste failed: ${pasted.error}`, 1);
       }
+      if (pasted.warning) info(`warning: ${pasted.warning}`);
     }
   }
 
@@ -3400,7 +3382,7 @@ async function startSingle(name, backend, backendArgs, opts = {}) {
   }
   const registerTarget = tmuxTarget || `${name}:0.0`;
   try {
-    const { status, body } = await request("POST", "/api/a2a/register", {
+    const { status, body } = await registerLocalAgent({
       agentId: name,
       tmuxTarget: registerTarget,
       ...(itermGuid ? { itermGuid } : {}),
@@ -3609,6 +3591,11 @@ function createDashboardView(viewSession, members, cwd) {
   if (!Array.isArray(members) || members.length === 0) {
     die(`dashboard '${viewSession}' needs at least one member`, 1);
   }
+  if (members.includes(viewSession)) die(`dashboard '${viewSession}' cannot also be a member`, 1);
+  members = [...new Set(members)];
+  for (const member of members) {
+    if (!tmuxTargetForSession(member)) die(`dashboard member '${member}' has no live tmux pane`, 1);
+  }
   if (tmuxSessionExists(viewSession)) {
     const killed = tmux(["kill-session", "-t", viewSession]);
     if (killed.status !== 0) {
@@ -3643,7 +3630,7 @@ function createDashboardView(viewSession, members, cwd) {
       "link-window",
       "-d",
       "-s",
-      `${member}:0`,
+      tmuxTargetForSession(member)?.split(".")[0] || member,
       "-t",
       `${viewSession}:${windowIndex}`,
     ]);
@@ -3722,6 +3709,16 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
     : "group";
   info(`starting group '${groupName}' (${members.length} characters)`);
 
+  const preparedMembers = new Map();
+  for (const member of members) {
+    validateAgentId(member.name);
+    const prompt = readFileSync(member.fullPath, "utf8").trim();
+    const persona = composePersona(member.name, prompt, []);
+    preparedMembers.set(member.name, {
+      ...preparePersonaDelivery(backend, backendArgs, persona, { env: agentEnv(member.name), backendCommand }),
+      reusePrompt: buildPersonaStartupMessage(persona),
+    });
+  }
   const spawned = [];
   /** @type {Map<string,"tmux"|"iterm">} */
   const spawnedTransport = new Map();
@@ -3729,13 +3726,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
   let groupWindowGuid = null;
   for (const char of members) {
     validateAgentId(char.name);
-    const prompt = readFileSync(char.fullPath, "utf8").trim();
-    const delivery = preparePersonaDelivery(
-      backend,
-      backendArgs,
-      composePersona(char.name, prompt, []),
-      { backendCommand },
-    );
+    const delivery = preparedMembers.get(char.name);
     const memberArgs = delivery.backendArgs;
     let createdSessionForThisAgent = false;
     /** @type {"tmux"|"iterm"} */
@@ -3762,15 +3753,13 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
         info(`  ${char.name}: FAILED: ${spawnedChar.error || "spawn failed"}`);
         continue;
       }
+      createdSessionForThisAgent = spawnedChar.created !== false;
       agentTransport = spawnedChar.transport;
       agentTmuxTarget = spawnedChar.tmuxTarget || null;
       agentItermGuid = spawnedChar.itermGuid || null;
-      if (agentTransport === "iterm" && !groupWindowGuid) {
-        groupWindowGuid = agentItermGuid;
-      }
       if (agentTransport === "tmux") {
         tmuxSetInstallToken(char.name, installToken());
-        spawnSync("sleep", ["1"]);
+        await sleep(1000);
         if (!tmuxSessionExists(char.name)) {
           info(
             `  ${char.name}: FAILED: ${sessionStartupError(char.name, backend)}`,
@@ -3778,21 +3767,21 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
           continue;
         }
       } else {
-        spawnSync("sleep", ["1"]);
+        await sleep(1000);
       }
-      if (delivery.startupPrompt) {
+      const initialPrompt = createdSessionForThisAgent ? delivery.startupPrompt : delivery.reusePrompt;
+      if (initialPrompt) {
         const pasted = await pasteStartupPromptToAgent({
           tmuxTarget: agentTmuxTarget,
           itermGuid: agentItermGuid,
-          content: delivery.startupPrompt,
+          content: initialPrompt,
           backend,
         });
         if (!pasted.ok) {
           info(`  ${char.name}: FAILED startup prompt paste: ${pasted.error}`);
-          if (agentTransport === "iterm" && agentItermGuid) {
-            await closeITerm2Session(agentItermGuid);
-          } else {
-            tmux(["kill-session", "-t", char.name]);
+          if (createdSessionForThisAgent) {
+            if (agentTransport === "iterm" && agentItermGuid) await closeITerm2Session(agentItermGuid);
+            else tmux(["kill-session", "-t", char.name]);
           }
           continue;
         }
@@ -3812,11 +3801,11 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
       if (agentTransport === "tmux") {
         tmuxSetInstallToken(char.name, installToken());
       }
-      if (delivery.startupPrompt) {
+      if (delivery.reusePrompt) {
         const pasted = await pasteStartupPromptToAgent({
           tmuxTarget: agentTmuxTarget,
           itermGuid: agentItermGuid,
-          content: delivery.startupPrompt,
+          content: delivery.reusePrompt,
           backend,
         });
         if (pasted.ok)
@@ -3837,7 +3826,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
     }
     const agentRegisterTarget = agentTmuxTarget || `${char.name}:0.0`;
     try {
-      const { status, body } = await request("POST", "/api/a2a/register", {
+      const { status, body } = await registerLocalAgent({
         agentId: char.name,
         tmuxTarget: agentRegisterTarget,
         ...(agentItermGuid ? { itermGuid: agentItermGuid } : {}),
@@ -3867,6 +3856,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
         }
         continue;
       }
+      if (agentTransport === "iterm" && !groupWindowGuid) groupWindowGuid = agentItermGuid;
       spawned.push(char.name);
       spawnedTransport.set(char.name, agentTransport);
     } catch (e) {
@@ -3881,7 +3871,7 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
     }
   }
 
-  spawnSync("sleep", ["2"]);
+  await sleep(2000);
   info("");
   if (spawned.length === 0) {
     die(`group '${groupName}' failed to start any members`, 1);
@@ -3926,6 +3916,18 @@ async function startGroup(groupName, backend, backendArgs, opts = {}) {
 }
 
 async function startTeam(teamSpec, opts = {}) {
+  const preparedAgents = new Map();
+  for (const agent of teamSpec.agents) {
+    validateAgentId(agent.id);
+    const backendCommand = backendCommandOverrideFor(agent.backend, opts);
+    requireBackendCommand(agent.backend, { backendCommand });
+    const baseArgs = translateTeamAgentArgs(agent, opts.yolo);
+    const persona = composePersona(agent.id, agent.rolePrompt, []);
+    preparedAgents.set(agent.id, {
+      ...preparePersonaDelivery(agent.backend, baseArgs, persona, { env: agentEnv(agent.id, agent.env), backendCommand }),
+      reusePrompt: buildPersonaStartupMessage(persona),
+    });
+  }
   const spawned = [];
   // Track per-agent transport so the post-spawn dashboard step skips
   // iTerm-backed agents (tmux link-window only handles tmux sessions).
@@ -3950,13 +3952,7 @@ async function startTeam(teamSpec, opts = {}) {
     // translateTeamAgentArgs already encodes this for the argv; we mirror
     // the same logic here so the bridge sees the same authority state.
     const effectiveYolo = teamAgentEffectiveYolo(agent, opts.yolo);
-    const baseArgs = translateTeamAgentArgs(agent, opts.yolo);
-    const delivery = preparePersonaDelivery(
-      agent.backend,
-      baseArgs,
-      composePersona(agent.id, agent.rolePrompt, []),
-      { env: agent.env, backendCommand },
-    );
+    const delivery = preparedAgents.get(agent.id);
     const launchArgs = delivery.backendArgs;
     let createdSessionForThisAgent = false;
     /** @type {"tmux"|"iterm"} */
@@ -3984,15 +3980,13 @@ async function startTeam(teamSpec, opts = {}) {
         info(`  ${agent.id}: FAILED: ${spawnedAgent.error || "spawn failed"}`);
         continue;
       }
-      if (spawnedAgent.transport === "iterm" && !teamWindowGuid) {
-        teamWindowGuid = spawnedAgent.itermGuid || null;
-      }
+      createdSessionForThisAgent = spawnedAgent.created !== false;
       agentTransport = spawnedAgent.transport;
       agentTmuxTarget = spawnedAgent.tmuxTarget || null;
       agentItermGuid = spawnedAgent.itermGuid || null;
       if (agentTransport === "tmux") {
         tmuxSetInstallToken(agent.id, installToken());
-        spawnSync("sleep", ["1"]);
+        await sleep(1000);
         if (!tmuxSessionExists(agent.id)) {
           info(
             `  ${agent.id}: FAILED: ${sessionStartupError(agent.id, agent.backend)}`,
@@ -4000,21 +3994,21 @@ async function startTeam(teamSpec, opts = {}) {
           continue;
         }
       } else {
-        spawnSync("sleep", ["1"]);
+        await sleep(1000);
       }
-      if (delivery.startupPrompt) {
+      const initialPrompt = createdSessionForThisAgent ? delivery.startupPrompt : delivery.reusePrompt;
+      if (initialPrompt) {
         const pasted = await pasteStartupPromptToAgent({
           tmuxTarget: agentTmuxTarget,
           itermGuid: agentItermGuid,
-          content: delivery.startupPrompt,
+          content: initialPrompt,
           backend: agent.backend,
         });
         if (!pasted.ok) {
           info(`  ${agent.id}: FAILED startup prompt paste: ${pasted.error}`);
-          if (agentTransport === "iterm" && agentItermGuid) {
-            await closeITerm2Session(agentItermGuid);
-          } else {
-            tmux(["kill-session", "-t", agent.id]);
+          if (createdSessionForThisAgent) {
+            if (agentTransport === "iterm" && agentItermGuid) await closeITerm2Session(agentItermGuid);
+            else tmux(["kill-session", "-t", agent.id]);
           }
           continue;
         }
@@ -4034,11 +4028,11 @@ async function startTeam(teamSpec, opts = {}) {
       if (agentTransport === "tmux") {
         tmuxSetInstallToken(agent.id, installToken());
       }
-      if (delivery.startupPrompt) {
+      if (delivery.reusePrompt) {
         const pasted = await pasteStartupPromptToAgent({
           tmuxTarget: agentTmuxTarget,
           itermGuid: agentItermGuid,
-          content: delivery.startupPrompt,
+          content: delivery.reusePrompt,
           backend: agent.backend,
         });
         if (pasted.ok)
@@ -4059,7 +4053,7 @@ async function startTeam(teamSpec, opts = {}) {
     }
     const agentRegisterTarget = agentTmuxTarget || `${agent.id}:0.0`;
     try {
-      const { status, body } = await request("POST", "/api/a2a/register", {
+      const { status, body } = await registerLocalAgent({
         agentId: agent.id,
         tmuxTarget: agentRegisterTarget,
         ...(agentItermGuid ? { itermGuid: agentItermGuid } : {}),
@@ -4089,6 +4083,7 @@ async function startTeam(teamSpec, opts = {}) {
         }
         continue;
       }
+      if (agentTransport === "iterm" && !teamWindowGuid) teamWindowGuid = agentItermGuid;
       spawned.push(agent.id);
       spawnedTransport.set(agent.id, agentTransport);
     } catch (err) {
@@ -4103,7 +4098,7 @@ async function startTeam(teamSpec, opts = {}) {
     }
   }
 
-  spawnSync("sleep", ["2"]);
+  await sleep(2000);
   info("");
   if (spawned.length === 0) {
     die(`team '${teamSpec.name}' failed to start any agents`, 1);
@@ -4187,290 +4182,127 @@ function resolveGlobalMode(cliGlobal) {
 }
 
 function resolveGlobalTunnelPort(portFlag) {
-  return portFlag || String(activePort());
+  return String(portFlag == null ? activePort() : Number(portFlag));
 }
 
 async function cmdStart(args) {
   const parsed = parseStartArgsForCli(args);
   const {
-    name: rawName,
-    backend,
-    backendCommand: rawBackendCommand,
-    backendArgs,
-    dashboard,
-    promptText,
-    skills,
-    yolo,
-    teamFile,
-    cohort,
+    name: rawName, backend, backendCommand: rawBackendCommand, backendArgs,
+    dashboard, promptText, skills, yolo, teamFile, cohort,
   } = parsed;
   const isGlobal = resolveGlobalMode(parsed.global);
-  const hasPersona = Boolean(promptText || skills.length);
-  const backendCommand = normalizeBackendCommand(
-    rawBackendCommand,
-    process.cwd(),
-  );
+  const hasPersona = promptText != null || skills.length > 0;
+  const backendCommand = normalizeBackendCommand(rawBackendCommand, process.cwd());
   const backendCommands = backendCommand ? { [backend]: backendCommand } : {};
-
-  // Explicit --team-file wins over name-based discovery and errors loudly
-  // on a missing path so a typo can't silently fall through to single-agent.
-  const explicitTeamSpec = teamFile
+  const teamSpec = teamFile
     ? loadTeamSpecFromFile(teamFile, process.cwd(), rawName)
-    : null;
-  const teamSpec =
-    explicitTeamSpec ||
-    (rawName ? loadResolvedTeamSpec(rawName, process.cwd()) : null);
-  if (teamSpec && hasPersona)
-    die(
-      `--prompt/--prompt-file/--skill cannot be combined with team spec '${teamFile || rawName}'; configure agents in the team file (role/role_file)`,
-    );
-
-  const name = rawName
+    : rawName ? loadResolvedTeamSpec(rawName, process.cwd()) : null;
+  if (teamSpec && hasPersona) {
+    die(`--prompt/--prompt-file/--skill cannot be combined with team spec '${teamFile || rawName}'; configure agents in the team file (role/role_file)`);
+  }
+  const name = teamSpec ? teamSpec.name : rawName
     ? normalizeDeclaredAgentId(rawName, rawName, "agent name")
     : sanitizeId(basename(process.cwd()));
-  if (!teamSpec && isGroup(name) && hasPersona)
-    die(
-      `--prompt/--prompt-file/--skill cannot be combined with group '${name}'; group members already inject their own prompts from the group's .md files`,
-    );
-
-  // --insecure / --url= / --port= are global-mode-only flags. Keep parsing
-  // and filtering even in local mode so a stray flag doesn't leak into the
-  // backend's argv (claude doesn't recognise --insecure). In local mode,
-  // setting any of these is a user error worth surfacing.
-  const {insecure} = parsed;
-  const urlFlag = parsed.url;
-  const portFlag = parsed.port;
-  const filteredBackendArgs = backendArgs;
+  const groupStart = !teamSpec && isGroup(name);
+  if (groupStart && hasPersona) {
+    die(`--prompt/--prompt-file/--skill cannot be combined with group '${name}'; group members already inject their own prompts from the group's .md files`);
+  }
+  const { insecure, url: urlFlag, port: portFlag } = parsed;
   if (!isGlobal && (insecure || urlFlag || portFlag)) {
-    die(
-      "--insecure, --url=, and --port= require global mode; pass --global or `a2a config set global true`",
-    );
+    die("--insecure, --url=, and --port= require global mode; pass --global or `a2a config set global true`");
   }
   if (!isGlobal && dashboard === true) {
-    const dashboardRef = teamSpec
-      ? cohort || teamSpec.name
-      : isGroup(name)
-        ? cohort || name
-        : null;
-    const viewSession = dashboardRef ? `${dashboardRef}-view` : null;
-    if (viewSession && tmuxSessionExists(viewSession)) {
-      openExistingDashboardView(viewSession);
+    const dashboardRef = teamSpec ? cohort || teamSpec.name : groupStart ? cohort || name : null;
+    if (dashboardRef && tmuxSessionExists(`${dashboardRef}-view`)) {
+      openExistingDashboardView(`${dashboardRef}-view`);
       return;
     }
   }
-
-  const effectiveBackendArgs = applyCliYolo(
-    backend,
-    filteredBackendArgs,
-    yolo,
-    name,
-  );
-  // Persona/delivery only apply to the single-agent path. Team and group
-  // starts discard the cmdStart-level persona (members compose their own
-  // from role/role_file or the group's .md files), so computing it there
-  // would only log a misleading `persona:` line — composePersona always
-  // returns non-empty text.
-  const singleAgentStart = !teamSpec && !isGroup(name);
-  const personaText = singleAgentStart
-    ? composePersona(name, promptText, skills)
-    : "";
-  if (personaText) info(`persona: ${describePersona(promptText, skills)}`);
-  const delivery = preparePersonaDelivery(
-    backend,
-    effectiveBackendArgs,
-    personaText,
-    { backendCommand },
-  );
-
-  // Resolve cohort membership BEFORE the spawn so we can:
-  //   (a) tell the operator whether this is joining N existing members vs
-  //       seeding a brand-new cohort (typo guard — silent creation hides
-  //       fat-finger mistakes like `credit-implementor` vs `-implementer`);
-  //   (b) choose the right description prefix (`group:` if the existing
-  //       cohort is group-style) so `a2a kill <cohort>` reaps the joiner;
-  //   (c) gate the post-spawn dashboard `link-window` to the join case.
-  const cohortJoin = cohort ? await resolveCohortJoin(cohort) : null;
-  if (cohortJoin) {
-    if (cohortJoin.isJoin) {
-      const n = cohortJoin.members.length;
-      info(
-        `joining ${cohortJoin.kind} cohort '${cohort}' (${n} existing member${n === 1 ? "" : "s"})`,
-      );
-    } else {
-      info(`starting new cohort '${cohort}' (no existing members)`);
+  let publicUrl = null;
+  if (isGlobal) {
+    if (!activeKey() && !insecure) {
+      die("global start exposes the bridge and requires an operator key; run `a2a config set key <secret>` or pass --insecure", 1);
     }
-  }
-  const cohortKind = cohortJoin?.kind || "team";
-  const joinExistingCohort = Boolean(cohortJoin?.isJoin);
-
-  if (!isGlobal) {
-    // ── local mode ────────────────────────────────────────────────────────
-    if (teamSpec) {
-      await startTeam(teamSpec, {
-        dashboard,
-        yolo,
-        cohort,
-        cohortKind,
-        backendCommands,
-      });
-      return;
-    }
-    if (isGroup(name)) {
-      await startGroup(name, backend, effectiveBackendArgs, {
-        dashboard,
-        yolo,
-        cohort,
-        cohortKind,
-        backendCommand,
-      });
-      return;
-    }
-    await startSingle(name, backend, delivery.backendArgs, {
-      startupPrompt: delivery.startupPrompt,
-      yolo,
-      cohort,
-      cohortKind,
-      joinExistingCohort,
-      dashboard,
-      backendCommand,
-    });
-    return;
-  }
-
-  // ── global mode ─────────────────────────────────────────────────────────
-  if (!activeKey() && !insecure) {
-    die(
-      "global start exposes the bridge and requires an operator key; run `a2a config set key <secret>` or pass --insecure",
-      1,
-    );
-  }
-  if (insecure)
-    info(
-      "warning: exposing bridge without an operator key because --insecure was supplied",
-    );
-
-  async function resolveNgrok(localPort) {
+    if (insecure && !activeKey()) info("warning: exposing bridge without an operator key because --insecure was supplied");
+    requireBinary("ngrok");
+    if (portFlag) process.env.A2A_PORT = String(Number(portFlag));
+    const remoteUrl = urlFlag ? normalizePeerUrlForConfig(urlFlag) : null;
+    const previousBridge = process.env.A2A_BRIDGE;
+    // Start the callback listener locally before routing API calls remotely.
+    process.env.A2A_BRIDGE = localBridgeUrl();
     try {
-      const u = await getNgrokUrl(localPort);
+      await ensureBridgeRunning();
+    } finally {
+      if (previousBridge === undefined) delete process.env.A2A_BRIDGE;
+      else process.env.A2A_BRIDGE = previousBridge;
+    }
+    const port = resolveGlobalTunnelPort(portFlag);
+    try {
+      publicUrl = await getNgrokUrl(port);
       info("ngrok already running");
-      return u;
     } catch {
-      info(`starting ngrok on port ${localPort}...`);
-      await startNgrok(localPort);
-      return getNgrokUrl(localPort);
+      info(`starting ngrok on port ${port}...`);
+      await startNgrok(port);
+      publicUrl = await getNgrokUrl(port);
     }
-  }
-
-  function persistPublicUrl(url) {
-    if (!url) return;
-    const normalized = normalizePeerUrlForConfig(url);
+    publicUrl = normalizePeerUrlForConfig(publicUrl);
+    process.env.A2A_BRIDGE_PUBLIC = publicUrl;
+    const storedUrl = activeUrl();
     try {
-      if (activeUrl() === normalized) return;
-      configSet("url", normalized);
-      info(`saved public url to config: ${normalized}`);
+      if (storedUrl !== publicUrl) {
+        configSet("url", publicUrl);
+        info(`saved public url to config: ${publicUrl}`);
+      }
     } catch (err) {
       info(`could not save public url to config: ${err.message}`);
     }
-  }
-
-  // Non-cohort global single-agent starts get a distinct description
-  // (`a2a start --global: <cwd>` instead of `a2a start: <cwd>`) so the
-  // bridge log makes the global mode visible. Cohort starts let startSingle
-  // do the formatting from opts.cohort + opts.cohortKind so the join +
-  // dashboard-link path stays unified with local mode.
-  const nonCohortDescription = `a2a start --global: ${process.cwd()}`;
-
-  if (urlFlag) {
-    const remoteUrl = normalizePeerUrlForConfig(urlFlag);
-    const localPort = resolveGlobalTunnelPort(portFlag);
-    process.env.A2A_BRIDGE = remoteUrl;
-    requireBinary("ngrok");
-    const publicUrl = await resolveNgrok(localPort);
-    // eslint-disable-next-line require-atomic-updates -- publicUrl is a local const, not stale state
-    process.env.A2A_BRIDGE_PUBLIC = publicUrl;
-    info(`remote bridge: ${remoteUrl}`);
-    info(`replies route via: ${publicUrl}`);
-    if (teamSpec) {
-      await startTeam(teamSpec, {
-        bridgeUrl: publicUrl,
-        dashboard,
-        yolo,
-        cohort,
-        cohortKind,
-        backendCommands,
-      });
-      return;
+    if (remoteUrl) {
+      process.env.A2A_BRIDGE = remoteUrl;
+      info(`remote bridge: ${remoteUrl}`);
+      info(`replies route via: ${publicUrl}`);
+    } else {
+      if (storedUrl && storedUrl !== publicUrl) {
+        info(`note: stored url (${storedUrl}) differs from live ngrok tunnel (${publicUrl}); using live tunnel`);
+      }
+      info(`bridge exposed at: ${publicUrl}`);
+      info("");
+      info("share with peers:");
+      info(`  a2a start --global --url=${publicUrl}`);
+      info("");
     }
-    if (isGroup(name)) {
-      await startGroup(name, backend, effectiveBackendArgs, {
-        bridgeUrl: publicUrl,
-        dashboard,
-        yolo,
-        cohort,
-        cohortKind,
-        backendCommand,
-      });
-      return;
-    }
-    await startSingle(name, backend, delivery.backendArgs, {
-      ...(cohort
-        ? { cohort, cohortKind, joinExistingCohort }
-        : { description: nonCohortDescription }),
-      bridgeUrl: publicUrl,
-      startupPrompt: delivery.startupPrompt,
-      yolo,
-      dashboard,
-      backendCommand,
-    });
-    return;
   }
-
-  requireBinary("ngrok");
-  const port = resolveGlobalTunnelPort(portFlag);
-  const storedUrl = activeUrl();
-  const publicUrl = await resolveNgrok(port);
-  persistPublicUrl(publicUrl);
-  if (storedUrl && storedUrl !== publicUrl) {
-    info(
-      `note: stored url (${storedUrl}) differs from live ngrok tunnel (${publicUrl}); using live tunnel`,
-    );
+  // Resolve membership only after selecting the registry used for this start.
+  const cohortJoin = cohort ? await resolveCohortJoin(cohort) : null;
+  if (cohortJoin?.isJoin) {
+    const count = cohortJoin.members.length;
+    info(`joining ${cohortJoin.kind} cohort '${cohort}' (${count} existing member${count === 1 ? "" : "s"})`);
+  } else if (cohortJoin) {
+    info(`starting new cohort '${cohort}' (no existing members)`);
   }
-  info(`bridge exposed at: ${publicUrl}`);
-  info("");
-  info("share with peers:");
-  info(`  a2a start --global --url=${publicUrl}`);
-  info("");
+  const cohortKind = cohortJoin?.kind || "team";
+  const common = {
+    dashboard, yolo, cohort, cohortKind,
+    ...(publicUrl ? { bridgeUrl: publicUrl } : {}),
+  };
   if (teamSpec) {
-    await startTeam(teamSpec, {
-      bridgeUrl: publicUrl,
-      dashboard,
-      yolo,
-      cohort,
-      cohortKind,
-      backendCommands,
-    });
+    await startTeam(teamSpec, { ...common, backendCommands });
     return;
   }
-  if (isGroup(name)) {
-    await startGroup(name, backend, effectiveBackendArgs, {
-      bridgeUrl: publicUrl,
-      dashboard,
-      yolo,
-      cohort,
-      cohortKind,
-      backendCommand,
-    });
+  const effectiveBackendArgs = applyCliYolo(backend, backendArgs, yolo, name);
+  if (groupStart) {
+    await startGroup(name, backend, effectiveBackendArgs, { ...common, backendCommand });
     return;
   }
+  const personaText = composePersona(name, promptText, skills);
+  if (personaText) info(`persona: ${describePersona(promptText, skills)}`);
+  const delivery = preparePersonaDelivery(backend, effectiveBackendArgs, personaText, {
+    env: agentEnv(name), backendCommand,
+  });
   await startSingle(name, backend, delivery.backendArgs, {
-    ...(cohort
-      ? { cohort, cohortKind, joinExistingCohort }
-      : { description: nonCohortDescription }),
-    bridgeUrl: publicUrl,
-    startupPrompt: delivery.startupPrompt,
-    yolo,
-    dashboard,
-    backendCommand,
+    ...common, backendCommand, startupPrompt: delivery.startupPrompt, personaText,
+    joinExistingCohort: Boolean(cohortJoin?.isJoin),
+    ...(isGlobal && !cohort ? { description: `a2a start --global: ${process.cwd()}` } : {}),
   });
 }
 
@@ -4508,109 +4340,93 @@ function isBenignSessionGoneError(err) {
 }
 
 async function killOne(id, knownAgent = undefined) {
-  // Per-transport kill: if the registered agent has an itermGuid we close
-  // the iTerm session via the bridge; otherwise we follow the tmux
-  // kill-session + unlink path.
-  let agent = knownAgent === undefined ? null : knownAgent;
+  let agent = knownAgent ?? null;
   if (knownAgent === undefined) {
-    try {
-      const agents = await listAgents();
-      agent = agents.find((a) => a.agentId === id) || null;
-    } catch {
-      /* bridge may be unreachable; fall back to tmux-only kill */
-    }
+    try { agent = (await listAgents()).find((entry) => entry.agentId === id) || null; }
+    catch { /* A verified local session can still be closed when HTTP is down. */ }
   }
-
   let tmuxMsg = "no session";
-  let tmuxOk = true;
-  if (agent?.itermGuid && !(await probeBridgeReachable())) {
-    // iTerm-backed agent but the iTerm bridge is down: the window may still
-    // be running and we cannot reach it. Falling through to the tmux path
-    // would "succeed" with no session, unregister the agent, and orphan the
-    // live iTerm window. Refuse and tell the operator the fix instead.
-    return {
-      ok: false,
-      tmuxMsg: "iterm bridge unreachable; cannot close the iTerm window",
-      regMsg:
-        "skipped (run 'a2a bridge iterm start' and retry, or close the window manually)",
-    };
-  }
-  if (agent?.itermGuid) {
-    const r = await closeITerm2Session(agent.itermGuid);
-    if (r.ok) {
-      tmuxMsg = "iterm session closed";
-      invalidateITermSessionCache();
-    } else if (isBenignSessionGoneError(r.error)) {
-      // The window was already closed (user cmd-W, iTerm restart, parent
-      // window closed). The goal of kill is "agent is gone" — it already
-      // is. Constraint 9: structured benign cleanup is ok.
-      tmuxMsg = "iterm session already gone";
+  try {
+    if (agentIsRemote(agent)) {
+      // Remote registration is a route, not ownership of a same-named local pane.
+      tmuxMsg = "remote session not modified";
     } else {
-      tmuxOk = false;
-      tmuxMsg = `iterm close failed: ${r.error || "unknown"}`;
-    }
-  } else {
-    // Capture the window_id of the agent's window 0 BEFORE killing the source
-    // session. `tmux kill-session` only unlinks the window from that session;
-    // any *-view dashboard (or user's inline-attach tmux session per
-    // createDashboardView's self-link branch) keeps the window — and its
-    // child process — alive. After kill-session we revisit window_id and
-    // kill the window everywhere it's still linked.
-    const token = installToken();
-    const sessionExists = tmuxSessionExists(id);
-    const windowId = sessionExists
-      ? tmuxWindowIdOf(`${id}:0`)
-      : tmuxWindowIdByName(id, token);
-
-    if (sessionExists) {
-      const r = tmux(["kill-session", "-t", id]);
-      tmuxOk = r.status === 0;
-      tmuxMsg = tmuxOk
-        ? "killed"
-        : `kill failed: ${(r.stderr || "").trim() || "unknown"}`;
-    }
-
-    if (windowId && tmuxWindowExists(windowId)) {
-      const r = tmux(["kill-window", "-t", windowId]);
-      const linkOk = r.status === 0;
-      if (linkOk) tmuxMsg = `${tmuxMsg} + unlinked from view`;
-      else {
-        tmuxOk = false;
-        tmuxMsg = `${tmuxMsg}; window unlink failed: ${(r.stderr || "").trim() || "unknown"}`;
+      let guid = viableItermGuid(agent?.itermGuid) ? agent.itermGuid.trim() : null;
+      const reachable = await probeBridgeReachable();
+      if (guid && !reachable) {
+        return { ok: false, tmuxMsg: "iterm bridge unreachable; cannot close the iTerm window", regMsg: "skipped (run 'a2a bridge iterm start' and retry, or close the window manually)" };
+      }
+      if (reachable && (guid || !agent)) {
+        const sessions = await listITermSessionsWithOwnership();
+        const recordedLive = guid && sessions.some((session) => session.guid === guid);
+        if (!recordedLive) {
+          const owned = findOwnedItermSessionByName(sessions, id, agent?.installToken || installToken());
+          guid = owned?.guid || guid;
+        }
+      }
+      if (guid) {
+        const result = await closeITerm2Session(guid);
+        if (!result.ok && !isBenignSessionGoneError(result.error)) {
+          return { ok: false, tmuxMsg: `iterm close failed: ${result.error || "unknown"}`, regMsg: "skipped (session may still be running)" };
+        }
+        tmuxMsg = result.ok ? "iterm session closed" : "iterm session already gone";
+        invalidateITermSessionCache();
+      } else {
+        const target = agent?.tmuxTarget || tmuxTargetForSession(id) || id;
+        const namedSession = target.replace(/^=/, "").split(":")[0];
+        if (agent && namedSession !== id) {
+          // Manual --target may be a pane inside an unrelated/shared session.
+          // Kill that pane, never all of its neighbours or an agent-named collision.
+          if (probeTmuxSessionAlive(exactTmuxTarget(target))) {
+            const result = tmux(["kill-pane", "-t", target]);
+            if (result.status !== 0) {
+              return { ok: false, tmuxMsg: `kill failed: ${result.error?.message || (result.stderr || "").trim() || "unknown"}`, regMsg: "skipped (session may still be running)" };
+            }
+            tmuxMsg = "killed registered pane";
+          }
+        } else {
+          const exists = tmuxSessionExists(id);
+          const windows = exists ? tmuxWindowIdsInSession(id) : [tmuxWindowIdByName(id, installToken())].filter(Boolean);
+          if (exists) {
+            const result = tmuxKillSession(id);
+            if (!result.ok && !result.skipped) {
+              return { ok: false, tmuxMsg: `kill failed: ${result.stderr || "unknown"}`, regMsg: "skipped (session may still be running)" };
+            }
+            tmuxMsg = "killed";
+          }
+          for (const window of windows) {
+            if (!tmuxWindowExists(window)) continue;
+            const result = tmux(["kill-window", "-t", window]);
+            if (result.status !== 0) {
+              return { ok: false, tmuxMsg: `${tmuxMsg}; window unlink failed: ${(result.stderr || "").trim() || "unknown"}`, regMsg: "skipped (linked process may still be running)" };
+            }
+            tmuxMsg = "killed + unlinked from view";
+          }
+        }
       }
     }
+  } catch (err) {
+    return { ok: false, tmuxMsg: `close failed: ${err.message || String(err)}`, regMsg: "skipped (session state could not be verified)" };
   }
-
-  let regMsg, regOk;
+  let regMsg;
+  let regOk = false;
   try {
-    const { status, body } = await request(
-      "DELETE",
-      `/api/a2a/register/${encodeURIComponent(id)}`,
-    );
+    const { status, body } = await unregisterAgentRegistration(id, agent);
     regOk = status === 200 && Boolean(body?.success);
-    regMsg = regOk
-      ? body.data?.removed
-        ? "unregistered"
-        : "not registered"
-      : `unreg failed: ${body?.error || `HTTP ${status}`}`;
-  } catch (e) {
-    regOk = false;
-    regMsg = `unreg failed: ${e.message}`;
+    regMsg = regOk ? (body.data?.removed ? "unregistered" : "not registered") : `unreg failed: ${body?.error || `HTTP ${status}`}`;
+  } catch (err) {
+    regMsg = `unreg failed: ${err.message}`;
   }
-  // Prune the killed agent from the cached registry so registry.json doesn't
-  // accumulate stale IDs. Do this regardless of whether the bridge DELETE
-  // succeeded — the process is gone either way.
-  try {
-    const cached = loadRegistry();
-    const agents = Array.isArray(cached.agents)
-      ? cached.agents.filter((a) => a !== id)
-      : [];
-    saveRegistry({ ...cached, agents });
-  } catch {
-    /* non-fatal — registry will self-heal on next getRegistry() call */
+  // Keep the retry hint when either registration could not be removed.
+  if (regOk) {
+    try {
+      const cached = loadRegistry();
+      saveRegistry({ ...cached, agents: Array.isArray(cached.agents) ? cached.agents.filter((entry) => entry !== id) : [] });
+    } catch (err) {
+      info(`warning: could not prune '${id}' from the registry cache: ${err.message}`);
+    }
   }
-
-  return { ok: tmuxOk && regOk, tmuxMsg, regMsg };
+  return { ok: regOk, tmuxMsg, regMsg };
 }
 
 async function safeListAgentsForKill() {
@@ -4622,18 +4438,20 @@ async function safeListAgentsForKill() {
 }
 
 async function killGroup(groupName) {
-  const registeredMembers = (await safeListAgentsForKill()).filter(
-    (a) => a.description === `group:${groupName}`,
-  );
-  const registeredById = new Map(
-    registeredMembers.map((agent) => [agent.agentId, agent]),
-  );
+  const allRegistered = await safeListAgentsForKill();
+  const registeredMembers = allRegistered.filter((agent) => agent.description === `group:${groupName}`);
+  const registeredById = new Map(allRegistered.map((agent) => [agent.agentId, agent]));
   const fileMembers = listGroupMembers(groupName).map((m) => ({
     agentId: m.name,
   }));
   const seen = new Set();
   const members = [...registeredMembers, ...fileMembers].filter((m) => {
     if (!m.agentId || seen.has(m.agentId)) return false;
+    const current = registeredById.get(m.agentId);
+    if (current && current.description !== `group:${groupName}`) {
+      info(`  ${m.agentId}: skipped (registered outside this group)`);
+      return false;
+    }
     seen.add(m.agentId);
     return true;
   });
@@ -4659,24 +4477,26 @@ async function killGroup(groupName) {
     );
     if (!ok) allOk = false;
   }
-  if (!allOk) process.exit(1);
+  if (!allOk) process.exitCode = 1;
 }
 
 async function killTeam(teamRef) {
   const spec = loadResolvedTeamSpec(teamRef, process.cwd());
-  const teamName = spec?.name || sanitizeId(teamRef);
-  const registeredMembers = (await safeListAgentsForKill()).filter(
-    (a) => a.description === `team:${teamName}`,
-  );
-  const registeredById = new Map(
-    registeredMembers.map((agent) => [agent.agentId, agent]),
-  );
+  const teamName = spec?.name || teamRef;
+  const allRegistered = await safeListAgentsForKill();
+  const registeredMembers = allRegistered.filter((agent) => agent.description === `team:${teamName}`);
+  const registeredById = new Map(allRegistered.map((agent) => [agent.agentId, agent]));
   const specMembers = (spec?.agents || []).map((a) => ({
     agentId: a.id,
   }));
   const seen = new Set();
   const members = [...registeredMembers, ...specMembers].filter((m) => {
     if (!m.agentId || seen.has(m.agentId)) return false;
+    const current = registeredById.get(m.agentId);
+    if (current && current.description !== `team:${teamName}`) {
+      info(`  ${m.agentId}: skipped (registered outside this team)`);
+      return false;
+    }
     seen.add(m.agentId);
     return true;
   });
@@ -4702,35 +4522,39 @@ async function killTeam(teamRef) {
     );
     if (!ok) allOk = false;
   }
-  if (!allOk) process.exit(1);
+  if (!allOk) process.exitCode = 1;
 }
 
 async function cmdKill(args) {
-  const hasAll = args.includes("--all");
-  const filtered = args.filter((a) => a !== "--all");
-  let [name] = parseArgs(filtered, {}).positional;
+  const { flags, positional } = parseSimpleCommandArgs(args, { booleans: ["all"] });
+  if (positional.length > 1) die("kill accepts only one target name", 1);
+  const hasAll = flags.all === true;
+  let [name] = positional;
+  const self = currentAgentId() || currentTmuxSession();
   if (hasAll && name) {
     die("kill --all cannot be combined with a target name", 1);
   }
 
-  if (hasAll || (!name && !currentTmuxSession())) {
+  if (hasAll || (!name && !self)) {
     const {
       registeredAgents,
       inventory: inv,
     } = await collectRuntimeSnapshot({ fresh: true });
-    const viewsToKill = inv.views.filter((v) => v.existsInTmux);
+    const ownership = tmuxListSessionOwnership(installToken());
+    const viewsToKill = inv.views.filter((v) => v.existsInTmux && ownership.ownedSessionIds.has(v.session));
+    const tmuxOrphans = inv.orphans.filter((id) => ownership.ownedSessionIds.has(id));
 
     if (
       registeredAgents.length === 0 &&
       viewsToKill.length === 0 &&
-      inv.orphans.length === 0 &&
+      tmuxOrphans.length === 0 &&
       inv.itermOrphans.length === 0
     ) {
       info("no agents registered");
       return;
     }
     info(
-      `killing all (${registeredAgents.length} agents, ${viewsToKill.length} views, ${inv.orphans.length} tmux orphans, ${inv.itermOrphans.length} iterm orphans)`,
+      `killing all (${registeredAgents.length} agents, ${viewsToKill.length} views, ${tmuxOrphans.length} tmux orphans, ${inv.itermOrphans.length} iterm orphans)`,
     );
     let allOk = true;
     for (const agent of registeredAgents) {
@@ -4749,7 +4573,7 @@ async function cmdKill(args) {
       );
       if (!r.ok) allOk = false;
     }
-    for (const orphan of inv.orphans) {
+    for (const orphan of tmuxOrphans) {
       const r = tmuxKillSessionDeep(orphan);
       if (r.skipped) continue;
       process.stdout.write(
@@ -4758,20 +4582,20 @@ async function cmdKill(args) {
       if (!r.ok) allOk = false;
     }
     for (const orphan of inv.itermOrphans) {
-      const r = await closeITerm2Session(orphan.guid);
+      const r = await closeITerm2Session(orphan.guid).catch((err) => ({ ok: false, error: err.message || String(err) }));
       const label = orphan.name || orphan.guid;
       process.stdout.write(
         `  ${label}: iterm ${r.ok ? "killed (orphan)" : `close failed: ${r.error || "unknown"}`}\n`,
       );
-      if (!r.ok) allOk = false;
+      if (!r.ok && !isBenignSessionGoneError(r.error)) allOk = false;
     }
     invalidateITermSessionCache();
-    if (!allOk) process.exit(1);
+    if (!allOk) process.exitCode = 1;
     return;
   }
 
   if (!name) {
-    name = currentTmuxSession();
+    name = self;
     if (!name) die("kill needs a name");
   }
   if (loadResolvedTeamSpec(name, process.cwd())) {
@@ -4782,57 +4606,43 @@ async function cmdKill(args) {
     await killGroup(name);
     return;
   }
-  try {
-    const agents = await listAgents();
-    if (agents.filter((a) => a.description === `group:${name}`).length > 0) {
-      await killGroup(name);
-      return;
-    }
-    if (agents.filter((a) => a.description === `team:${name}`).length > 0) {
-      await killTeam(name);
-      return;
-    }
-    const agent = agents.find((a) => a.agentId === name) || null;
-    validateAgentId(name);
-    const r = await killOne(name, agent);
-    process.stdout.write(`${name}: tmux ${r.tmuxMsg}, bridge ${r.regMsg}\n`);
-    if (!r.ok) process.exit(1);
+  let agents = [];
+  try { agents = await listAgents(); } catch { /* local cleanup remains available */ }
+  if (agents.some((agent) => agent.description === `group:${name}`)) {
+    await killGroup(name);
     return;
-  } catch {
-    /* fall through */
+  }
+  if (agents.some((agent) => agent.description === `team:${name}`)) {
+    await killTeam(name);
+    return;
   }
   validateAgentId(name);
-  const r = await killOne(name);
-  process.stdout.write(`${name}: tmux ${r.tmuxMsg}, bridge ${r.regMsg}\n`);
-  if (!r.ok) process.exit(1);
+  const agent = agents.find((entry) => entry.agentId === name) || null;
+  const result = await killOne(name, agent);
+  process.stdout.write(`${name}: tmux ${result.tmuxMsg}, bridge ${result.regMsg}\n`);
+  if (!result.ok) process.exitCode = 1;
 }
 
 async function cmdAttach(args) {
-  const explicitNativeScroll =
-    args.includes("--native-scroll") || args.includes("--cc");
-  const wantDashboard =
-    args.includes("--dashboard") || args.includes("--layout");
-  const wantRebuild = args.includes("--rebuild");
-  const filtered = args.filter(
-    (a) =>
-      a !== "--native-scroll" &&
-      a !== "--cc" &&
-      a !== "--dashboard" &&
-      a !== "--layout" &&
-      a !== "--rebuild",
-  );
-  let [id] = parseArgs(filtered, {}).positional;
+  const { flags, positional } = parseSimpleCommandArgs(args, { booleans: ["native-scroll", "cc", "dashboard", "layout", "rebuild"] });
+  if (positional.length > 1) die("attach accepts only one target name", 1);
+  const explicitNativeScroll = flags["native-scroll"] || flags.cc;
+  const wantDashboard = flags.dashboard || flags.layout;
+  const wantRebuild = flags.rebuild === true;
+  let [id] = positional;
   let agents = null;
   if (!id) {
     agents = await listAgents();
-    const r = inferPeer(agents, currentTmuxSession());
+    const r = inferPeer(agents, currentAgentId());
     if (r.error) die(r.error, 1);
     // eslint-disable-next-line require-atomic-updates -- local var, no concurrent writers
     id = r.peer.agentId;
   }
-  validateAgentId(id);
 
-  if (!agents) agents = await listAgents();
+  if (!agents) {
+    try { agents = await listAgents(); }
+    catch { agents = []; }
+  }
   const agent = agents.find((a) => a.agentId === id) || null;
   const baseRef = cohortOrTeamRefBase(id);
   const teamLike = await isCohortOrTeamRef(id, agents);
@@ -4846,9 +4656,12 @@ async function cmdAttach(args) {
         1,
       );
     }
-    cmdUi(wantRebuild ? [dashboardRef, "--rebuild"] : [dashboardRef]);
+    await cmdUi(wantRebuild ? [dashboardRef, "--rebuild"] : [dashboardRef]);
     return;
   }
+
+  validateAgentId(id);
+  if (agentIsRemote(agent)) die(`cannot attach remote agent '${id}' to a local terminal`, 1);
 
   // iTerm-backed agents: ask the bridge to bring the session to the front.
   // Falls through to tmux when the agent has no iterm guid (or the bridge is
@@ -4865,11 +4678,22 @@ async function cmdAttach(args) {
     return;
   }
 
-  if (!tmuxSessionExists(id)) {
+  if (viableItermGuid(agent?.itermGuid)) {
+    info(`'${id}' is registered but its iTerm session is unavailable — restarting it`);
+    const restart = await restartRegisteredAgentSession(agent);
+    if (!restart.ok) die(`attach could not restart '${id}': ${restart.error}`, 1);
+    const target = await resolveLiveItermTargetForAgent(agent);
+    if (!target.guid || !target.bridgeReachable) die(`no reachable iterm session for '${id}'`, 1);
+    const focused = await focusITerm2Session(target.guid);
+    if (!focused.ok) die(`iterm attach failed: ${focused.error}`, 1);
+    return;
+  }
+
+  if (!(agent?.tmuxTarget && !viableItermGuid(agent.itermGuid) ? probeTmuxSessionAlive(exactTmuxTarget(agent.tmuxTarget)) : tmuxSessionExists(id))) {
     const viewId = id.endsWith("-view") ? null : `${id}-view`;
     if (viewId && tmuxSessionExists(viewId)) {
       id = viewId;
-    } else if (agent && !agent.bridgeUrl) {
+    } else if (agent && !agentIsRemote(agent)) {
       // Attach bootstraps: the agent is registered locally but has no live
       // surface, so bring the session back up on its recorded transport,
       // then attach to it.
@@ -4878,7 +4702,7 @@ async function cmdAttach(args) {
       if (!restart.ok) {
         die(`attach could not restart '${id}': ${restart.error}`, 1);
       }
-      if (!tmuxSessionExists(id)) {
+      if (!(agent?.tmuxTarget && !viableItermGuid(agent.itermGuid) ? probeTmuxSessionAlive(exactTmuxTarget(agent.tmuxTarget)) : tmuxSessionExists(id))) {
         // iTerm restart path: the respawned window is already up; focus it.
         const refreshed =
           (await listAgents()).find((a) => a.agentId === id) || null;
@@ -4903,15 +4727,17 @@ async function cmdAttach(args) {
       die(await attachMissingTargetMessage(id), 1);
     }
   }
+  const attachTarget = !isDashboardSession(id) && agent?.tmuxTarget ? agent.tmuxTarget : id;
   if (process.env.TMUX) {
-    switchTmuxClient(id);
+    if (explicitNativeScroll) die("native scroll attach must be launched outside an existing tmux session", 1);
+    switchTmuxClient(attachTarget);
     return;
   }
   const wantNativeScroll = explicitNativeScroll || !process.env.TMUX;
   if (wantNativeScroll && !isIterm2()) {
     info("native scroll attach works best from iTerm2 via tmux control mode");
   }
-  attachTmuxSession(id, {
+  attachTmuxSession(attachTarget, {
     nativeScroll: explicitNativeScroll ? true : undefined,
   });
 }
@@ -5018,12 +4844,13 @@ function parsePositiveIntegerOption(raw, fallback, label) {
 }
 
 async function cmdPeek(args) {
-  const parsed = parseArgs(args, { lines: true });
+  const parsed = parseSimpleCommandArgs(args, { values: ["lines"] });
+  if (parsed.positional.length > 1) die("peek accepts only one target name", 1);
   let [id] = parsed.positional;
   let agents = null;
   if (!id) {
     agents = await listAgents();
-    const r = inferPeer(agents, currentTmuxSession());
+    const r = inferPeer(agents, currentAgentId());
     if (r.error) die(r.error, 1);
     // eslint-disable-next-line require-atomic-updates -- local var, no concurrent writers
     id = r.peer.agentId;
@@ -5032,8 +4859,11 @@ async function cmdPeek(args) {
   const lines = parsePositiveIntegerOption(parsed.flags.lines, 30, "--lines");
 
   // Look up the registered agent so we can pick the right transport.
-  if (!agents) agents = await listAgents();
+  if (!agents) {
+    try { agents = await listAgents(); } catch { agents = []; }
+  }
   const agent = agents.find((a) => a.agentId === id) || null;
+  if (agentIsRemote(agent)) die(`cannot peek remote agent '${id}' through a local terminal`, 1);
   const iterm = agent ? await resolveLiveItermTargetForAgent(agent) : null;
 
   // Prefer iTerm screen op when the agent is iTerm-backed and the bridge is
@@ -5051,18 +4881,27 @@ async function cmdPeek(args) {
     return;
   }
 
-  if (!tmuxSessionExists(id)) die(`no tmux session '${id}'`, 1);
+  if (viableItermGuid(agent?.itermGuid)) die(`no reachable iterm session for '${id}'`, 1);
+  const target = agent?.tmuxTarget || id;
+  if (!probeTmuxSessionAlive(exactTmuxTarget(target))) die(`no tmux session '${id}'`, 1);
   // -S -<lines> pulls scrollback history; without it capture-pane returns
   // only the visible pane height, silently capping --lines at ~40.
-  const r = tmux(["capture-pane", "-t", id, "-p", "-S", `-${lines}`]);
+  const r = tmux(["capture-pane", "-t", target, "-p", "-S", `-${lines}`]);
   if (r.status !== 0) die(`capture-pane failed`, 1);
-  const text = (r.stdout || "").split("\n").slice(-lines).join("\n");
+  const text = (r.stdout || "").replace(/\n$/, "").split("\n").slice(-lines).join("\n");
   process.stdout.write(text + (text.endsWith("\n") ? "" : "\n"));
 }
 
 function resolveReconnectTargets(name, hasAll, launchCwd, opts = {}) {
   const listTmuxSessions =
     Array.isArray(opts.tmuxSessions) ? () => opts.tmuxSessions : tmuxListSessions;
+  const base = name ? cohortOrTeamRefBase(name) : null;
+  const cohortMembers = Array.isArray(opts.agents) && base
+    ? opts.agents.filter((agent) => agent.description === `team:${base}` || agent.description === `group:${base}`)
+    : [];
+  if (cohortMembers.length > 0) {
+    return { targets: cohortMembers.map((agent) => agent.agentId), viewSession: `${base}-view` };
+  }
   return resolveReconnectTargetsPure({
     name,
     hasAll,
@@ -5086,6 +4925,11 @@ function resolveReconnectTargets(name, hasAll, launchCwd, opts = {}) {
  */
 function buildReconnectView(viewSession, members) {
   if (!viewSession || members.length === 0) return;
+  if (members.includes(viewSession)) die(`dashboard '${viewSession}' cannot also be a member`, 1);
+  members = [...new Set(members)];
+  for (const member of members) {
+    if (!tmuxTargetForSession(member)) die(`dashboard member '${member}' has no live tmux pane`, 1);
+  }
   if (tmuxSessionExists(viewSession)) {
     const killed = tmux(["kill-session", "-t", viewSession]);
     if (killed.status !== 0) {
@@ -5120,7 +4964,7 @@ function buildReconnectView(viewSession, members) {
       "link-window",
       "-d",
       "-s",
-      `${member}:0`,
+      tmuxTargetForSession(member)?.split(".")[0] || member,
       "-t",
       `${viewSession}:${windowIndex}`,
     ]);
@@ -5161,14 +5005,11 @@ function buildReconnectView(viewSession, members) {
 }
 
 async function cmdReconnect(args) {
-  requireBinary("tmux");
-  const hasAll = args.includes("--all");
-  const wantDashboard =
-    args.includes("--dashboard") || args.includes("--layout");
-  const filtered = args.filter(
-    (a) => a !== "--all" && a !== "--layout" && a !== "--dashboard",
-  );
-  const [name] = parseArgs(filtered, {}).positional;
+  const { flags, positional } = parseSimpleCommandArgs(args, { booleans: ["all", "dashboard", "layout"] });
+  if (positional.length > 1) die("reconnect accepts only one target name", 1);
+  const hasAll = flags.all === true;
+  const wantDashboard = flags.dashboard || flags.layout;
+  const [name] = positional;
   if (hasAll && name) {
     die("reconnect --all cannot be combined with a target name", 1);
   }
@@ -5183,13 +5024,7 @@ async function cmdReconnect(args) {
     }
   })();
   const liveAgents = new Set(tmuxOwnership.sessions);
-  const existing = (() => {
-    try {
-      return new Map();
-    } catch {
-      return new Map();
-    }
-  })();
+  const existing = new Map();
   try {
     for (const agent of await listAgents()) existing.set(agent.agentId, agent);
   } catch {
@@ -5220,7 +5055,8 @@ async function cmdReconnect(args) {
     viewSession,
     description: explicitDescription,
   } = resolveReconnectTargets(name, hasAll, process.cwd(), {
-    tmuxSessions: tmuxOwnership.sessions,
+    tmuxSessions: [...new Set([...tmuxOwnership.sessions, ...itermLive.keys()])],
+    agents: [...existing.values()],
   });
   if (targets.length === 0) {
     info("no reconnect targets found");
@@ -5231,11 +5067,17 @@ async function cmdReconnect(args) {
     (id) => !id.endsWith("-view"),
   );
   const connected = [];
+  const dashboardMembers = [];
   let allOk = true;
   for (const id of uniqueTargets) {
     validateAgentId(id);
-    const itermGuid = itermLive.get(id) || null;
-    const tmuxLive = liveAgents.has(id);
+    const current = existing.get(id);
+    if (agentIsRemote(current)) { info(`${id}: skipped remote registration`); continue; }
+    const recordedIterm = viableItermGuid(current?.itermGuid);
+    const tmuxLive = !recordedIterm && (current?.tmuxTarget
+      ? probeTmuxSessionAlive(exactTmuxTarget(current.tmuxTarget))
+      : liveAgents.has(id));
+    const itermGuid = !tmuxLive ? (itermLive.get(id) || null) : null;
     if (!tmuxLive && !itermGuid) {
       if (!explicitTarget) continue;
       process.stdout.write(`${id}: no live tmux or iterm session\n`);
@@ -5251,7 +5093,6 @@ async function cmdReconnect(args) {
       process.stdout.write(`${id}: skipped unowned tmux session\n`);
       continue;
     }
-    const current = existing.get(id);
     const cwd = current?.cwd || (tmuxLive ? tmuxPanePath(id) : "");
     const description =
       current?.description ||
@@ -5274,7 +5115,7 @@ async function cmdReconnect(args) {
         : tmuxToken || token;
     const payload = {
       agentId: id,
-      tmuxTarget: `${id}:0.0`,
+      tmuxTarget: tmuxLive ? (current?.tmuxTarget || tmuxTargetForSession(id)) : (current?.tmuxTarget || `${id}:0.0`),
       cwd,
       description,
       installToken: tokenForPayload,
@@ -5301,28 +5142,29 @@ async function cmdReconnect(args) {
     // session to stamp; their ownership lives in the bridge's map.
     if (tmuxLive) tmuxSetInstallToken(id, tokenForPayload);
     try {
-      const { status, body } = await request(
-        "POST",
-        "/api/a2a/register",
-        payload,
-      );
+      const { status, body } = await registerLocalAgent(payload);
       if (status !== 200 || !body?.success)
         throw new Error(body?.error || `HTTP ${status}`);
       process.stdout.write(`${id}: reconnected\n`);
       connected.push(id);
+      if (tmuxLive && liveAgents.has(id)) dashboardMembers.push(id);
     } catch (err) {
       process.stdout.write(`${id}: reconnect failed: ${err.message}\n`);
       allOk = false;
     }
   }
 
-  if (wantDashboard && connected.length > 0)
-    buildReconnectView(viewSession || "a2a-view", connected);
-  if (!allOk) process.exit(1);
+  if (wantDashboard && dashboardMembers.length > 0) {
+    requireBinary("tmux");
+    buildReconnectView(viewSession || "a2a-view", dashboardMembers);
+  } else if (wantDashboard && connected.length > 0) {
+    info("dashboard skipped: no tmux-backed members (native iTerm sessions remain connected)");
+  }
+  if (!allOk) process.exitCode = 1;
 }
 
 // `a2a ui <ref> [--rebuild]` — open the dashboard TUI for an existing cohort
-// or team without touching the bridge. When the view session is already up
+// or team without changing bridge registrations. When the view session is already up
 // this just attaches (or switches the current tmux client). When it is gone,
 // the live agents are looked up via the same resolution `a2a reconnect`
 // uses (cohorts, team specs, group members) and a fresh view session is
@@ -5330,11 +5172,12 @@ async function cmdReconnect(args) {
 // view session already exists. Once attached, the in-TUI Enter / 1-9 / quick
 // jump paths self-heal any individually broken windows by relinking from
 // `<agent>:0` on demand (see jumpToAgent in dashboard-tui.mjs).
-function cmdUi(args) {
+async function cmdUi(args) {
   requireBinary("tmux");
-  const wantRebuild = args.includes("--rebuild");
-  const filtered = args.filter((a) => a !== "--rebuild");
-  const [name] = parseArgs(filtered, {}).positional;
+  const { flags, positional } = parseSimpleCommandArgs(args, { booleans: ["rebuild"] });
+  if (positional.length > 1) die("ui accepts only one target name", 1);
+  const wantRebuild = flags.rebuild === true;
+  const [name] = positional;
   if (!name) die("usage: a2a ui <name> [--rebuild]", 1);
 
   // Accept either a base ref (team / cohort) or a literal view-session
@@ -5355,7 +5198,14 @@ function cmdUi(args) {
   // Slow path: resolve membership and build (or rebuild) the view session.
   // Reuse reconnect's resolver so this works uniformly for cohorts, teams,
   // and group references.
-  const resolved = resolveReconnectTargets(baseRef, false, process.cwd());
+  let registered = [];
+  try {
+    const response = await request("GET", "/api/a2a/agents", null, { autoStartBridge: false });
+    if (response.status === 200 && response.body?.success && Array.isArray(response.body.data?.agents)) {
+      registered = response.body.data.agents;
+    }
+  } catch { /* local team/group specs still work while the bridge is unavailable */ }
+  const resolved = resolveReconnectTargets(baseRef, false, process.cwd(), { agents: registered });
   const viewSession = resolved.viewSession || directView;
 
   // If --rebuild was not requested but the resolver picked a different
@@ -5392,25 +5242,25 @@ function cmdUi(args) {
 }
 
 function validateLogArgs(args) {
-  const allowedBoolean = new Set(["--path", "-f", "--follow"]);
-  for (const arg of args) {
-    if (allowedBoolean.has(arg)) continue;
-    if (arg.startsWith("--lines=")) continue;
-    if (arg === "--lines") continue;
-    if (arg.startsWith("-")) die(`unknown log flag ${arg}`, 1);
-  }
+  let ended = false;
+  const normalized = args.map((arg) => {
+    if (arg === "--") { ended = true; return arg; }
+    return !ended && arg === "-f" ? "--follow" : arg;
+  });
+  const parsed = parseSimpleCommandArgs(normalized, { booleans: ["path", "follow"], values: ["lines"] });
+  if (parsed.positional.length) die(`unexpected log argument '${parsed.positional[0]}'`, 1);
 }
 
 function cmdLog(args) {
   validateLogArgs(args);
-  // parseArgs requires every recognised flag to have a value. Strip the boolean flags
-  // (--path, -f/--follow) up front so the value-only parser can handle the rest.
-  const wantPath = args.includes("--path");
-  const wantFollow = args.includes("-f") || args.includes("--follow");
-  const filtered = args.filter(
-    (a) => a !== "--path" && a !== "-f" && a !== "--follow",
-  );
-  const parsed = parseArgs(filtered, { lines: true });
+  let ended = false;
+  const normalized = args.map((arg) => {
+    if (arg === "--") { ended = true; return arg; }
+    return !ended && arg === "-f" ? "--follow" : arg;
+  });
+  const parsed = parseSimpleCommandArgs(normalized, { booleans: ["path", "follow"], values: ["lines"] });
+  const wantPath = parsed.flags.path;
+  const wantFollow = parsed.flags.follow;
   const path = messageLogPath();
 
   if (wantPath) {
@@ -5427,7 +5277,8 @@ function cmdLog(args) {
       stdio: "inherit",
     });
     if (r.status === null && r.signal) process.exit(0);
-    process.exit(r.status ?? 0);
+    if (r.error) die(`failed to follow log: ${r.error.message}`, 1);
+    process.exit(r.status ?? 1);
   }
 
   const lines = parsePositiveIntegerOption(parsed.flags.lines, 50, "--lines");
@@ -5462,7 +5313,7 @@ function validateStatusArgs(args) {
 }
 
 async function collectRuntimeSnapshot({ peers = false, fresh = false } = {}) {
-  const self = currentTmuxSession();
+  const self = currentAgentId() || currentTmuxSession();
   const peerSnapshotsPromise = peers ? gatherPeerAgents() : Promise.resolve([]);
   try {
     const params = new URLSearchParams();
@@ -5474,7 +5325,9 @@ async function collectRuntimeSnapshot({ peers = false, fresh = false } = {}) {
       `/api/a2a/runtime-snapshot?${params.toString()}`,
       null,
     );
-    if (status === 200 && body?.success && body.data?.inventory) {
+    if (status === 200 && body?.success && body.data?.inventory && body.data?.snapshot &&
+        Array.isArray(body.data.snapshot.attention) && Array.isArray(body.data.registeredAgents) &&
+        ["registered", "views", "orphans", "itermOrphans"].every((key) => Array.isArray(body.data.inventory[key]))) {
       const peerSnapshots = await peerSnapshotsPromise;
       if (peerSnapshots.length > 0) {
         const snapshot = buildStatusSnapshot({
@@ -5561,16 +5414,17 @@ function parseSimpleCommandArgs(args, { booleans = [], values = [] } = {}) {
     }
     if (!valueSet.has(key)) die(`unknown flag --${key}`, 1);
     const value = eqIdx === -1 ? args[++i] : arg.slice(eqIdx + 1);
-    if (!value || String(value).startsWith("--")) die(`--${key} requires a value`, 1);
+    if (!value || (eqIdx === -1 && String(value).startsWith("--"))) die(`--${key} requires a value`, 1);
     flags[key] = value;
   }
   return { flags, positional };
 }
 
 async function cmdEvents(args = []) {
-  const { flags } = parseSimpleCommandArgs(args, {
+  const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["json", "peers", "no-peers"],
   });
+  if (positional.length) die("events does not accept positional arguments", 1);
   if (flags.peers && flags["no-peers"])
     die("events accepts only one peer mode: --peers or --no-peers", 1);
   const { snapshot } = await collectRuntimeSnapshot({ peers: flags.peers === true });
@@ -5580,9 +5434,10 @@ async function cmdEvents(args = []) {
 }
 
 async function cmdAttention(args = []) {
-  const { flags } = parseSimpleCommandArgs(args, {
+  const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["json", "peers", "no-peers"],
   });
+  if (positional.length) die("attention does not accept positional arguments", 1);
   if (flags.peers && flags["no-peers"])
     die("attention accepts only one peer mode: --peers or --no-peers", 1);
   const { snapshot } = await collectRuntimeSnapshot({ peers: flags.peers === true });
@@ -5592,10 +5447,11 @@ async function cmdAttention(args = []) {
 }
 
 async function cmdDoctor(args = []) {
-  const { flags } = parseSimpleCommandArgs(args, {
+  const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["json", "peers", "no-peers"],
     values: ["bundle"],
   });
+  if (positional.length) die("doctor does not accept positional arguments", 1);
   if (flags.peers && flags["no-peers"])
     die("doctor accepts only one peer mode: --peers or --no-peers", 1);
   const { snapshot, registry } = await collectRuntimeSnapshot({
@@ -5637,6 +5493,7 @@ async function cmdReload(args = []) {
   const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["dry-run", "json"],
   });
+  if (positional.length > 1) die("reload accepts only one name", 1);
   const [teamRef] = positional;
   if (!teamRef) die("reload requires a team name", 1);
   const teamSpec = loadResolvedTeamSpec(teamRef, process.cwd());
@@ -5676,6 +5533,7 @@ function cmdLayout(args = []) {
   const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["json"],
   });
+  if (positional.length > 1) die("layout accepts only one name", 1);
   const [teamRef] = positional;
   if (!teamRef) die("layout requires a team name", 1);
   const specPath = resolveTeamRef(teamRef, process.cwd());
@@ -5691,6 +5549,7 @@ function cmdIterm(args = []) {
   const { flags, positional } = parseSimpleCommandArgs(args, {
     booleans: ["print"],
   });
+  if (positional.length > 1) die("iterm accepts only one name", 1);
   const [target] = positional;
   if (!target) die("iterm requires an agent or session name", 1);
   validateAgentId(target);
@@ -5711,34 +5570,34 @@ function cmdIterm(args = []) {
 
 async function cmdPm(args = []) {
   const { flags, positional } = parseSimpleCommandArgs(args, {
-    booleans: ["write", "start"],
-    values: ["workers", "backend", "worker-backend"],
+    booleans: ["write", "start"], values: ["workers", "backend", "worker-backend"],
   });
+  if (positional.length > 1) die("pm accepts only one name", 1);
   const [name] = positional;
   if (!name) die("pm requires a team name", 1);
   validateAgentId(name);
+  const backend = flags.backend || "claude";
+  const workerBackend = flags["worker-backend"] || backend;
+  for (const value of [backend, workerBackend]) {
+    if (!BACKEND_FLAGS.has(value)) die(`unsupported backend '${value}'`, 1);
+  }
   const spec = buildPmWorkerSpec({
-    name,
-    workers: flags.workers || 2,
-    backend: flags.backend || "claude",
-    workerBackend: flags["worker-backend"] || flags.backend || "claude",
+    name, workers: parsePositiveIntegerOption(flags.workers, 2, "--workers"),
+    backend, workerBackend,
   });
   const body = dumpTeamSpec(spec);
-  if (!flags.write && !flags.start) {
-    process.stdout.write(body);
-    return;
-  }
+  if (!flags.write && !flags.start) { process.stdout.write(body); return; }
   const path = join(teamSpecsDir(), `${name}.yaml`);
+  mkdirSync(dirname(path), { recursive: true });
   try {
-    statSync(path);
-    if (flags.write || flags.start) die(`team spec already exists: ${path}`, 1);
+    writeFileSync(path, body, { flag: "wx" });
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-    writeFileSync(path, body);
-    process.stdout.write(`${path}\n`);
+    if (err.code === "EEXIST") die(`team spec already exists: ${path}`, 1);
+    throw err;
   }
+  process.stdout.write(`${path}\n`);
   if (flags.start) {
-    const teamSpec = loadResolvedTeamSpec(name, process.cwd());
+    const teamSpec = normalizeTeamSpec(name, path, loadTeamSpec(path), process.cwd());
     await ensureBridgeRunning();
     await startTeam(teamSpec, { dashboard: true });
   }
@@ -5762,7 +5621,7 @@ async function cmdList(args = []) {
   } = await collectRuntimeSnapshot({ peers: !wantNoPeers });
   const bridgeError = snapshot.attention.find((a) => a.kind === "bridge-error")
     ?.message || null;
-  const self = currentTmuxSession();
+  const self = currentAgentId() || currentTmuxSession();
   const viewsToShow = inv.views.filter((v) => v.existsInTmux);
 
   if (wantJson) {
@@ -5808,9 +5667,7 @@ async function cmdList(args = []) {
     return;
   }
 
-  const hasAnyPeerRow = peerSnapshots.some(
-    (s) => s.error || s.agents.length > 0,
-  );
+  const hasAnyPeerRow = peerSnapshots.length > 0;
   if (
     inv.registered.length === 0 &&
     viewsToShow.length === 0 &&
@@ -5911,7 +5768,7 @@ async function cmdList(args = []) {
 
   if (bridgeError)
     process.stdout.write(
-      `(bridge unreachable: ${bridgeError}; showing tmux state only)\n`,
+      `(bridge unreachable: ${bridgeError}; showing available local session state)\n`,
     );
 
   // Return the value shared by every row in a group, else null. Empty-string
@@ -5966,6 +5823,8 @@ async function cmdList(args = []) {
     if (group.peerUrl) headerParts.push(group.peerUrl);
     if (sharedStatus) headerParts.push(sharedStatus);
     if (sharedMode) headerParts.push(sharedMode);
+    const sharedCwd = sharedField(group.agents, "cwd");
+    if (sharedCwd) headerParts.push(sharedCwd);
     for (const v of group.views) headerParts.push(`view ${v}`);
 
     if (!firstGroup) process.stdout.write("\n");
@@ -5978,13 +5837,15 @@ async function cmdList(args = []) {
       const cells = [pad(r.id, idW)];
       if (!hoistStatusForRows) cells.push(r.status);
       if (sharedMode == null && r.mode) cells.push(r.mode);
+      if (sharedCwd == null && r.cwd) cells.push(r.cwd);
       process.stdout.write(`  ${cells.join("  ")}\n`);
     }
   }
 }
 
 async function cmdRegister(args) {
-  const { flags } = parseArgs(args, { id: true, target: true, desc: true });
+  const { flags, positional } = parseSimpleCommandArgs(args, { values: ["id", "target", "desc"] });
+  if (positional.length) die("register does not accept positional arguments", 1);
   if (!flags.id || !flags.target) die("register requires --id and --target");
   validateAgentId(flags.id);
   validateTmuxTarget(flags.target);
@@ -5996,7 +5857,7 @@ async function cmdRegister(args) {
   const targetSession = String(flags.target).split(":")[0];
   if (targetSession && tmuxSessionExists(targetSession))
     tmuxSetInstallToken(targetSession, token);
-  const { status, body } = await request("POST", "/api/a2a/register", {
+  const { status, body } = await registerLocalAgent({
     agentId: flags.id,
     tmuxTarget: flags.target,
     description: flags.desc || "",
@@ -6009,15 +5870,18 @@ async function cmdRegister(args) {
 }
 
 async function cmdUnregister(args) {
-  let [id] = parseArgs(args, {}).positional;
+  const { positional } = parseSimpleCommandArgs(args);
+  if (positional.length > 1) die("unregister accepts only one target name", 1);
+  let [id] = positional;
   if (!id) {
-    id = currentTmuxSession();
+    id = currentAgentId();
     if (!id) die("unregister needs a name");
   }
-  const { status, body } = await request(
-    "DELETE",
-    `/api/a2a/register/${encodeURIComponent(id)}`,
-  );
+  validateAgentId(id);
+  let agent = null;
+  try { agent = (await listAgents()).find((entry) => entry.agentId === id) || null; }
+  catch { /* The DELETE still reports the registry's actual availability. */ }
+  const { status, body } = await unregisterAgentRegistration(id, agent);
   if (status !== 200 || !body?.success)
     die(`unregister failed: ${body?.error || `HTTP ${status}`}`, 1);
   process.stdout.write(`${JSON.stringify(body.data, null, 2)  }\n`);
@@ -6025,6 +5889,8 @@ async function cmdUnregister(args) {
 
 function cmdConfig(args) {
   const [sub, key, val] = args;
+  const expected = sub === "set" ? 3 : sub === "get" ? 2 : 1;
+  if (args.length > expected) die("too many config arguments");
   switch (sub) {
     case "ls":
     case undefined: {
@@ -6065,6 +5931,7 @@ async function cmdAuth(args) {
       await authAdd(rest);
       break;
     case "list":
+      if (rest.length) die("auth list does not accept arguments");
       await authList();
       break;
     case "revoke":
@@ -6117,7 +5984,7 @@ function authRevoke(args) {
   if (!peer) die("specify a peer: a2a auth revoke --<peer>");
   const cfg = loadConfig();
   const peers = { ...(cfg.peers || {}) };
-  if (!peers[peer]) die(`no peer '${peer}'`);
+  if (!Object.hasOwn(peers, peer)) die(`no peer '${peer}'`);
   delete peers[peer];
   patchConfig({ peers });
   process.stdout.write(`  removed peer '${peer}'\n`);
@@ -6130,6 +5997,7 @@ async function main() {
   if (argv.length === 0 || ["help", "-h", "--help"].includes(argv[0])) usage(0);
 
   const lead = argv[0];
+  const isSubcommand = new Set(["bridge", "raw", "command", "completion", "say", "ask", "reply", "start", "start-global", "kill", "reconnect", "ui", "attach", "peek", "log", "status", "events", "attention", "doctor", "reload", "layout", "iterm", "pm", "list", "auth", "config", "gen-key", "register", "unregister"]).has(lead);
 
   if (
     Object.hasOwn(LEGACY_ACTION_CMD, lead) &&
@@ -6147,7 +6015,7 @@ async function main() {
     }
   }
 
-  if (isSequenceFlagArgv(argv)) {
+  if (!isSubcommand && isSequenceFlagArgv(argv)) {
     try {
       const parsed = parseSequenceFlagArgv(argv, await getRegistry());
       await runSequenceCommand(parsed);
@@ -6157,7 +6025,7 @@ async function main() {
     }
   }
 
-  if (isColonFlagArgv(argv)) {
+  if (!isSubcommand && isColonFlagArgv(argv)) {
     try {
       await sendNormalizedEnvelope(
         parseColonFlagArgv(argv, await getRegistry()),
@@ -6168,7 +6036,7 @@ async function main() {
     }
   }
 
-  if (isFlagSendArgv(argv)) {
+  if (!isSubcommand && isFlagSendArgv(argv)) {
     try {
       const parsed = parseFlagSendArgv(argv, await getRegistry());
       if (!parsed) die("could not parse send arguments", 1);
@@ -6179,7 +6047,7 @@ async function main() {
     }
   }
 
-  if (argv.some((a) => /^(from|to|origin):/.test(a))) {
+  if (!isSubcommand && argv.some((a) => /^(from|to|origin):/.test(a))) {
     try {
       await doSend(parseArgs(argv, { to: true, from: true, origin: true }));
       return;
@@ -6295,4 +6163,4 @@ async function main() {
   }
 }
 
-main();
+main().catch((err) => die(err?.message || String(err), 1));
