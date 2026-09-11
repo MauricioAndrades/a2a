@@ -1,0 +1,58 @@
+name: A2A maintenance verification
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/a2a-maintenance-verify.yml]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install native test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux
+          npm install --ignore-scripts --no-audit --no-fund
+      - name: Native Vitest baseline
+        id: vitest
+        continue-on-error: true
+        run: npm test -- --reporter=verbose
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.24.x'
+          cache: false
+      - name: Dashboard Go baseline
+        id: dashboard
+        continue-on-error: true
+        working-directory: cmd/a2a-dashboard
+        run: go test -race ./...
+      - name: Input probe Go baseline
+        id: probe
+        continue-on-error: true
+        working-directory: cmd/a2a-input-probe
+        run: go test -race ./...
+      - name: Python and shell syntax
+        id: syntax
+        continue-on-error: true
+        run: |
+          python3 -m py_compile cmd/a2a-iterm2-bridge/bridge.py
+          bash -n cmd/a2a-iterm2-bridge/launch.sh install scripts/a2a-status-segment.sh completions/a2a.bash
+      - name: Baseline summary
+        if: always()
+        env:
+          VITEST_RESULT: ${{ steps.vitest.outcome }}
+          DASHBOARD_RESULT: ${{ steps.dashboard.outcome }}
+          PROBE_RESULT: ${{ steps.probe.outcome }}
+          SYNTAX_RESULT: ${{ steps.syntax.outcome }}
+        run: |
+          printf 'Vitest: %s\nDashboard Go: %s\nInput probe Go: %s\nSyntax: %s\n' "$VITEST_RESULT" "$DASHBOARD_RESULT" "$PROBE_RESULT" "$SYNTAX_RESULT" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$VITEST_RESULT:$DASHBOARD_RESULT:$PROBE_RESULT:$SYNTAX_RESULT" = success:success:success:success
