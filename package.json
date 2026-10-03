@@ -6,11 +6,13 @@
   "bin": {
     "a2a": "./bin/a2a.mjs",
     "a2a-server": "./src/a2a-server.mjs",
-    "a2a-channel": "./src/a2a-channel.mjs"
+    "a2a-channel": "./src/a2a-channel.mjs",
+    "a2a-dots": "./src/a2a-dots.mjs"
   },
   "scripts": {
     "start": "node src/a2a-server.mjs",
     "channel": "node src/a2a-channel.mjs",
+    "dots": "node src/a2a-dots.mjs",
     "setup": "node scripts/install.mjs",
     "bootstrap": "node scripts/install.mjs --yes",
     "postinstall": "node scripts/postinstall-hint.mjs",
@@ -20,6 +22,7 @@
     "test:vitest:channel": "vitest run tests/a2a-channel-vitest.test.mjs",
     "test:vitest:cli": "vitest run tests/cli-vitest.test.mjs",
     "test:vitest:config": "vitest run tests/a2a-config-vitest.test.mjs",
+    "test:vitest:dots": "vitest run tests/a2a-dots-vitest.test.mjs",
     "test:vitest:server": "vitest run tests/a2a-server-vitest.test.mjs",
     "test:vitest:team-spec": "vitest run tests/a2a-team-spec-vitest.test.mjs",
     "test:vitest:tokens": "vitest run tests/a2a-tokens-vitest.test.mjs",
