@@ -1,0 +1,12 @@
+{
+  "name": "a2a-local",
+  "interface": { "displayName": "a2a Local Plugins" },
+  "plugins": [
+    {
+      "name": "a2a",
+      "source": { "source": "local", "path": "./plugins/a2a" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

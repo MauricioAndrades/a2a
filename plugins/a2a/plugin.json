@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "a2a",
+  "version": "0.1.0",
+  "description": "Connect Codex and local ChatGPT Work to the existing a2a Dot MCP adapter for agent discovery, messages, replies, and team lifecycle operations.",
+  "author": { "name": "op" },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "a2a",
+        "shortDescription": "Talk to your local agents",
+        "longDescription": "Discover live a2a agents, send authorized messages, read asynchronous replies, and start or stop agents through the existing a2a runtime. Connects to the local Dot MCP adapter on this Mac for Codex and ChatGPT Work.",
+        "developerName": "op",
+        "category": "Developer Tools",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": [
+          "Use a2a to show my live agents.",
+          "Use a2a to read replies sent to the Dot.",
+          "Use a2a to help me coordinate a named agent."
+        ]
+      }
+    }
+  }
+}

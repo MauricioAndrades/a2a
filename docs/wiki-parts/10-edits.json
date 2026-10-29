@@ -1,0 +1,6 @@
+[
+  {
+    "old": "- **Architecture Topography** defines process boundaries, graph evidence, and module ownership. See [Architecture Topography](#architecture-topography).",
+    "new": "- **Scope** states which files the map covers and which paths are excluded or ignored, with reasons. See [Scope](#scope).\n- **Architecture Topography** defines process boundaries, graph evidence, and module ownership. See [Architecture Topography](#architecture-topography)."
+  }
+]

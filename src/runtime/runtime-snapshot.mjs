@@ -1,0 +1,260 @@
+import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  isGroup,
+  loadRegistry,
+  teamSpecsDir,
+} from "../a2a-config.mjs";
+import {
+  loadTeamSpec,
+  resolveTeamSpecPath,
+} from "../a2a-team-spec.mjs";
+import {
+  itermSessionAgentId,
+  listITermSessionsWithOwnership,
+} from "../transport-probes.mjs";
+import {
+  buildSessionInventory,
+  makeItermOwnershipChecker,
+} from "../cli/session-inventory.mjs";
+import { buildStatusSnapshot } from "../cli/status-snapshot.mjs";
+
+const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const REPO_TEAMS_DIR = join(RUNTIME_ROOT, "teams");
+const A2A_INSTALL_TOKEN_OPTION = "@a2a-install-token";
+const RUNTIME_SNAPSHOT_CACHE_TTL_MS = 750;
+
+let runtimeSnapshotCache = null;
+let runtimeSnapshotGeneration = 0;
+const pendingRuntimeSnapshots = new Map();
+
+function buildRuntimeSnapshotCacheKey(input) {
+  // Every field returned to callers must participate in cache identity.
+  return JSON.stringify(input);
+}
+
+function tmux(args) {
+  return spawnSync("tmux", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+export function tmuxListSessions() {
+  return tmuxListSessionOwnership(null).sessions;
+}
+
+function tmuxListSessionOwnership(expectedToken) {
+  const r = tmux([
+    "list-sessions",
+    "-F",
+    `#{session_name}\t#{${A2A_INSTALL_TOKEN_OPTION}}`,
+  ]);
+  const sessions = [];
+  const ownedSessionIds = new Set();
+  if (r.status !== 0) {
+    return { sessions, ownedSessionIds };
+  }
+  for (const line of (r.stdout || "").split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+    const sepIndex = line.indexOf("\t");
+    const name = (sepIndex === -1 ? line : line.slice(0, sepIndex)).trim();
+    if (!name) {
+      continue;
+    }
+    sessions.push(name);
+    if (!expectedToken) {
+      continue;
+    }
+    const token = sepIndex === -1 ? "" : line.slice(sepIndex + 1).trim();
+    if (token === expectedToken) {
+      ownedSessionIds.add(name);
+    }
+  }
+  return { sessions, ownedSessionIds };
+}
+
+function loadResolvedTeamSpec(ref, launchCwd = process.cwd()) {
+  const specPath = resolveTeamSpecPath(
+    ref,
+    launchCwd || process.cwd(),
+    REPO_TEAMS_DIR,
+    teamSpecsDir(),
+  );
+  if (!specPath) {
+    return null;
+  }
+  return loadTeamSpec(specPath);
+}
+
+function readRegistryForRuntime() {
+  try {
+    const registry = loadRegistry();
+    const cachedAgentIds = Array.isArray(registry.agents)
+      ? registry.agents
+      : [];
+    return {
+      agents: cachedAgentIds,
+      groups: Array.isArray(registry.groups) ? registry.groups : [],
+      cachedAgentIds,
+      installToken:
+        typeof registry.installToken === "string" && registry.installToken
+          ? registry.installToken
+          : null,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      agents: [],
+      groups: [],
+      cachedAgentIds: [],
+      installToken: null,
+      error: err.message || String(err),
+    };
+  }
+}
+
+function collectItermLiveAgentIds(registeredAgents, sessions) {
+  const sessionAgentIds = new Set();
+  const sessionGuids = new Set();
+  for (const session of sessions) {
+    if (session?.guid) {
+      sessionGuids.add(session.guid);
+    }
+    const id = itermSessionAgentId(session);
+    if (id) {
+      sessionAgentIds.add(id);
+    }
+  }
+  const ids = [];
+  for (const agent of registeredAgents) {
+    if (!agent?.agentId) {
+      continue;
+    }
+    if (sessionAgentIds.has(agent.agentId) || sessionGuids.has(agent.itermGuid)) {
+      ids.push(agent.agentId);
+    }
+  }
+  return ids;
+}
+
+async function collectItermSessionsForRuntime() {
+  try {
+    return await listITermSessionsWithOwnership();
+  } catch {
+    return [];
+  }
+}
+
+export async function buildRuntimeSnapshotFromState({
+  registeredAgents = [],
+  peerSnapshots = [],
+  bridgeError = null,
+  self = null,
+  launchCwd = process.cwd(),
+  cache = false,
+  // Same predicate the caller's delivery path uses to pick remote delivery;
+  // see buildSessionInventory. Constant per process, so it is deliberately
+  // left out of the cache key.
+  isRemoteRouted = () => false,
+} = {}) {
+  const registry = readRegistryForRuntime();
+  const cacheKey = cache
+    ? buildRuntimeSnapshotCacheKey({
+        registeredAgents,
+        peerSnapshots,
+        bridgeError,
+        self,
+        launchCwd,
+        registry,
+      })
+    : null;
+  const now = Date.now();
+  if (
+    cacheKey &&
+    runtimeSnapshotCache &&
+    runtimeSnapshotCache.key === cacheKey &&
+    runtimeSnapshotCache.expires > now
+  ) {
+    return runtimeSnapshotCache.value;
+  }
+
+  if (cacheKey && pendingRuntimeSnapshots.has(cacheKey)) {
+    return await pendingRuntimeSnapshots.get(cacheKey);
+  }
+  const generation = runtimeSnapshotGeneration;
+  const pending = collectRuntimeSnapshot({
+    registeredAgents, peerSnapshots, bridgeError, self, launchCwd, registry, isRemoteRouted,
+  }).then((value) => {
+    if (cacheKey && generation === runtimeSnapshotGeneration) {
+      runtimeSnapshotCache = {
+        key: cacheKey,
+        expires: Date.now() + RUNTIME_SNAPSHOT_CACHE_TTL_MS,
+        value,
+      };
+    }
+    return value;
+  }).finally(() => {
+    // A reset may already have started a newer collection under the same key.
+    if (cacheKey && pendingRuntimeSnapshots.get(cacheKey) === pending) {
+      pendingRuntimeSnapshots.delete(cacheKey);
+    }
+  });
+  if (cacheKey) {
+    pendingRuntimeSnapshots.set(cacheKey, pending);
+  }
+  return await pending;
+}
+
+async function collectRuntimeSnapshot({
+  registeredAgents, peerSnapshots, bridgeError, self, launchCwd, registry, isRemoteRouted,
+}) {
+  const itermSessions = await collectItermSessionsForRuntime();
+  const itermLiveAgentIds = collectItermLiveAgentIds(
+    registeredAgents,
+    itermSessions,
+  );
+  const tmuxOwnership = tmuxListSessionOwnership(registry.installToken);
+  const inventory = buildSessionInventory({
+    registeredAgents,
+    tmuxSessions: tmuxOwnership.sessions,
+    itermLiveAgentIds,
+    cachedAgentIds: registry.cachedAgentIds,
+    isGroup,
+    loadResolvedTeamSpec,
+    isA2aOwnedSession: (name) => tmuxOwnership.ownedSessionIds.has(name),
+    itermSessions,
+    isA2aOwnedITermSession: makeItermOwnershipChecker(
+      itermSessions,
+      registry.installToken,
+    ),
+    isRemoteRouted,
+    launchCwd,
+  });
+  const snapshot = buildStatusSnapshot({
+    inventory,
+    peerSnapshots,
+    self,
+    bridgeError: registry.error
+      ? [bridgeError, `registry: ${registry.error}`].filter(Boolean).join("; ")
+      : bridgeError,
+  });
+  const value = {
+    snapshot,
+    inventory,
+    registeredAgents,
+    peerSnapshots,
+    registry,
+    bridgeError,
+  };
+  return value;
+}
+
+export function clearRuntimeSnapshotCache() {
+  runtimeSnapshotGeneration++;
+  pendingRuntimeSnapshots.clear();
+  runtimeSnapshotCache = null;
+}

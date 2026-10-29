@@ -1,0 +1,22 @@
+[
+  {
+    "old": "- **Installation and Generated Assets** and **Verification Architecture** cover bootstrap, generated team support, and the test strategy. See [Installation and Generated Assets](#installation-and-generated-assets) and [Verification Architecture](#verification-architecture).",
+    "new": "- **Installation and Generated Assets** and **Verification Architecture** cover bootstrap, generated team support, and the test strategy. See [Installation and Generated Assets](#installation-and-generated-assets) and [Verification Architecture](#verification-architecture).\n- **Repository Documentation and External Tools** maps the operator README, the promotional image, the tunnel-client bundle notes, and the iTerm2-native host proposal with its spike. See [Repository Documentation and External Tools](#repository-documentation-and-external-tools)."
+  },
+  {
+    "old": "- [Global and dual-registration mode](#command-line-orchestrator-global-and-dual-registration-mode)",
+    "new": "- [Global and dual-registration mode](#command-line-orchestrator-global-and-dual-registration-mode)\n- [Shell integration](#command-line-orchestrator-shell-integration)"
+  },
+  {
+    "old": "| `completion` | [`cmdCompletion()`][ref-394] | Shell integration | This section |",
+    "new": "| `completion` | [`cmdCompletion()`][ref-394] | Shell integration | [Shell integration](#command-line-orchestrator-shell-integration) |"
+  },
+  {
+    "old": "- [Input probe](#dashboard-and-operator-interfaces-input-probe)",
+    "new": "- [Input probe](#dashboard-and-operator-interfaces-input-probe)\n- [Go module manifests](#dashboard-and-operator-interfaces-go-module-manifests)"
+  },
+  {
+    "old": "which lets a tmux `status-right` call `a2a status --segment` without rendering noise on machines that run no agents.",
+    "new": "which lets a tmux `status-right` call `a2a status --segment` without rendering noise on machines that run no agents. [Shell integration](#command-line-orchestrator-shell-integration) documents the wrapper script and its effect on a stopped bridge."
+  }
+]

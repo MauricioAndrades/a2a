@@ -1,0 +1,10 @@
+[
+  {
+    "old": "- [Backend translation matrix](#team-specifications-and-backend-translation-backend-translation-matrix)\n",
+    "new": "- [Backend translation matrix](#team-specifications-and-backend-translation-backend-translation-matrix)\n- [Backend CLI schemas](#team-specifications-and-backend-translation-backend-cli-schemas)\n- [Shipped sample teams](#team-specifications-and-backend-translation-shipped-sample-teams)\n"
+  },
+  {
+    "old": "- **Team Specifications and Backend Translation** covers YAML/JSON resolution and backend-specific permission flags.",
+    "new": "- **Team Specifications and Backend Translation** covers YAML/JSON resolution, backend-specific permission flags, the documentation-only backend CLI schemas, and the shipped sample teams."
+  }
+]

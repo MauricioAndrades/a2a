@@ -1,0 +1,10 @@
+[
+  {
+    "old": "so their safety contracts matter to agents modifying packaging or generated workflows.",
+    "new": "so their safety contracts matter to agents modifying packaging or generated workflows. The content of the two installed skill trees, and the Codex plugin package that the installer does not touch, is mapped in [Agent Skills and Plugin Packaging](#agent-skills-and-plugin-packaging)."
+  },
+  {
+    "old": "See [Bridge Server and Registry](#bridge-server-and-registry) for remote callback routing and owner enforcement.",
+    "new": "See [Bridge Server and Registry](#bridge-server-and-registry) for remote callback routing and owner enforcement, and [Codex plugin package](#agent-skills-and-plugin-packaging-codex-plugin-package) for the plugin manifest that points Codex and ChatGPT Work at this adapter."
+  }
+]

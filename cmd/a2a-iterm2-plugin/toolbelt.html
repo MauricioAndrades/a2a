@@ -1,0 +1,662 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>a2a</title>
+<!--
+  a2a Toolbelt: an agent console styled after the VS Code chat sidebar.
+  Served by cmd/a2a-iterm2-plugin/plugin.py (class Toolbelt, GET /?t=TOKEN).
+  Self-contained: no network fetches besides the plugin's own /api routes.
+
+  Design source (VS Code checkout ~/Documents/dev/vscode):
+    src/vs/workbench/contrib/chat/browser/widget/media/chat.css        chat list, request bubble, input part, chips, send button
+    src/vs/workbench/contrib/chat/browser/agentSessions/media/agentsessionsviewer.css  agent switcher rows
+    src/vs/workbench/contrib/chat/common/widget/chatColors.ts          chat.* color tokens
+    src/vs/platform/theme/common/sizes/baseSizes.ts                    corner radii, codicon sizes
+    src/vs/workbench/browser/media/part.css                            35px view title bar
+    extensions/theme-defaults/themes/{dark,light}_modern.json          theme colors
+  Icons are codicons (@vscode/codicons 0.0.46) inlined as SVG paths.
+-->
+<style>
+/* Light Modern */
+:root{
+  --font: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", system-ui, sans-serif;
+  --mono: Menlo, Monaco, "Courier New", monospace;
+  --sideBar-background:#F8F8F8; --foreground:#3B3B3B; --descriptionForeground:#3B3B3B; --disabledForeground:#61616180;
+  --icon-foreground:#3B3B3B; --focusBorder:#005FB8; --errorForeground:#F85149;
+  --input-background:#FFFFFF; --input-border:#CECECE; --input-foreground:#3B3B3B; --input-placeholderForeground:#767676;
+  --button-background:#005FB8; --button-hoverBackground:#0258A8; --button-foreground:#FFFFFF;
+  --list-hoverBackground:#F2F2F2; --list-activeSelectionBackground:#E8E8E8; --list-activeSelectionForeground:#000000;
+  --list-inactiveSelectionBackground:#E4E6F1; --toolbar-hoverBackground:#b8b8b850;
+  --badge-background:#CCCCCC; --badge-foreground:#3B3B3B; --activityBarBadge-background:#005FB8; --activityBarBadge-foreground:#FFFFFF;
+  --checkbox-background:#F8F8F8; --checkbox-border:#CECECE;
+  --inputOption-activeBackground:#BED6ED; --inputOption-activeBorder:#005FB8; --inputOption-activeForeground:#000000;
+  --chat-requestBorder:rgba(0,0,0,.10); --chat-avatarBackground:#f2f2f2; --chat-requestBubbleBackground:rgba(173,214,255,.30);
+  --chat-linesAddedForeground:#107C10; --chat-linesRemovedForeground:#BC2F32; --textLink-foreground:#005FB8;
+  --sideBarSectionHeader-border:#E5E5E5; --editor-background:#FFFFFF;
+  --scrollbarSlider-background:rgba(100,100,100,.4); --scrollbarSlider-hoverBackground:rgba(100,100,100,.7);
+}
+/* Dark Modern */
+@media (prefers-color-scheme: dark){:root{
+  --sideBar-background:#181818; --foreground:#CCCCCC; --descriptionForeground:#9D9D9D; --disabledForeground:#CCCCCC80;
+  --icon-foreground:#CCCCCC; --focusBorder:#0078D4; --errorForeground:#F85149;
+  --input-background:#313131; --input-border:#3C3C3C; --input-foreground:#CCCCCC; --input-placeholderForeground:#989898;
+  --button-background:#0078D4; --button-hoverBackground:#026EC1; --button-foreground:#FFFFFF;
+  --list-hoverBackground:#2A2D2E; --list-activeSelectionBackground:#04395E; --list-activeSelectionForeground:#FFFFFF;
+  --list-inactiveSelectionBackground:#37373D; --toolbar-hoverBackground:#5a5d5e50;
+  --badge-background:#616161; --badge-foreground:#F8F8F8; --activityBarBadge-background:#0078D4; --activityBarBadge-foreground:#FFFFFF;
+  --checkbox-background:#313131; --checkbox-border:#3C3C3C;
+  --inputOption-activeBackground:#2489DB82; --inputOption-activeBorder:#2488DB; --inputOption-activeForeground:#FFFFFF;
+  --chat-requestBorder:rgba(255,255,255,.10); --chat-avatarBackground:#1f1f1f; --chat-requestBubbleBackground:rgba(38,79,120,.30);
+  --chat-linesAddedForeground:#54B054; --chat-linesRemovedForeground:#FC6A6A; --textLink-foreground:#4daafc;
+  --sideBarSectionHeader-border:#2B2B2B; --editor-background:#1F1F1F;
+  --scrollbarSlider-background:rgba(121,121,121,.4); --scrollbarSlider-hoverBackground:rgba(100,100,100,.7);
+}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{margin:0;background:var(--sideBar-background);color:var(--foreground);font:13px/1.4 var(--font);-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;overflow:hidden;width:100%;min-width:0}
+button{font:inherit;color:inherit}
+:focus{outline:none}
+:focus-visible{outline:1px solid var(--focusBorder);outline-offset:-1px}
+::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scrollbarSlider-background)} ::-webkit-scrollbar-thumb:hover{background:var(--scrollbarSlider-hoverBackground)}
+.cdi{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px}
+.cdi svg{display:block;width:16px;height:16px;fill:currentColor}
+.cdi.c svg{width:12px;height:12px}
+
+/* view title bar: part.css (.part > .title 35px, title-label h2 11px uppercase, padding-left 8+12) */
+.title{height:35px;flex:none;display:flex;align-items:center;padding:0 8px 0 20px;gap:4px;min-width:0}
+.title h2{margin:0;font-size:11px;font-weight:normal;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
+.title .sub{color:var(--descriptionForeground);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.title .grow{flex:1}
+.abadge{background:var(--activityBarBadge-background);color:var(--activityBarBadge-foreground);font-size:10px;min-width:16px;height:16px;line-height:10px;padding:3px 5px;border-radius:10px;text-align:center;flex:none}
+/* actionbar.css: .action-label padding 3px, radius cornerRadius-medium 6px; hover toolbar.hoverBackground */
+.act{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:3px;border-radius:6px;color:var(--icon-foreground);cursor:pointer;flex:none}
+.act:hover{background:var(--toolbar-hoverBackground)}
+.act:focus-visible{outline:1px solid var(--focusBorder);outline-offset:-1px}
+.act[disabled]{color:var(--disabledForeground);cursor:default;background:none}
+
+/* agent switcher: agentsessionsviewer.css (stacked sessions control) */
+.sessions{flex:none;display:flex;flex-direction:column;min-height:0;max-height:40%}
+.section{display:flex;align-items:center;height:22px;padding:0 8px 0 14px;font-size:11px;font-weight:500;color:var(--descriptionForeground);text-transform:uppercase;cursor:pointer;user-select:none;flex:none}
+.section .twist{margin-right:2px;transition:transform .1s}
+.section.collapsed .twist{transform:rotate(-90deg)}
+.section .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.section .count{opacity:.7;margin-right:4px}
+.section .act{text-transform:none}
+.agents{overflow-y:auto;overflow-x:hidden;padding:0 6px 4px;min-height:0}
+.agent{display:flex;align-items:center;height:24px;padding:0 6px;gap:6px;border-radius:6px;cursor:pointer;min-width:0;position:relative}
+.agent:hover{background:var(--list-hoverBackground)}
+.agent.active{background:var(--list-inactiveSelectionBackground)}
+.agents:focus-within .agent.active{background:var(--list-activeSelectionBackground);color:var(--list-activeSelectionForeground)}
+.agent:focus-visible{outline:1px solid var(--focusBorder);outline-offset:-1px}
+/* toggle.css .monaco-checkbox: 18px, radius 3px, checkbox.* colors; rendered at 16px to sit in the 16px icon column */
+.chk{all:unset;box-sizing:border-box;width:16px;height:16px;border-radius:3px;border:1px solid var(--checkbox-border);background:var(--checkbox-background);color:var(--foreground);display:flex;align-items:center;justify-content:center;flex:none;cursor:pointer}
+.chk .cdi{width:12px;height:12px;visibility:hidden}
+.chk.on{background:var(--inputOption-activeBackground);border-color:var(--inputOption-activeBorder);color:var(--inputOption-activeForeground)}
+.chk.on .cdi{visibility:visible}
+.chk:focus-visible{outline:1px solid var(--focusBorder);outline-offset:1px}
+/* single-line row: name, then status/backend muted, like a VS Code list row (22-24px) */
+.trow{flex:1;display:flex;align-items:center;line-height:17px;min-width:0;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--chat-linesAddedForeground)}
+.dot.peer{background:var(--textLink-foreground)}
+.dot.other{background:transparent;box-shadow:inset 0 0 0 1.5px var(--descriptionForeground)}
+.name{flex:0 1 auto;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desc{flex:1 1 0;min-width:0;font-size:12px;color:var(--descriptionForeground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agents:focus-within .agent.active .desc{color:inherit;opacity:.85}
+.cbadge{padding:3px 5px;border-radius:11px;font-size:11px;min-width:18px;min-height:18px;line-height:11px;text-align:center;background:var(--badge-background);color:var(--badge-foreground);flex:none;margin:-1px 0}
+.agent .open{display:none;width:20px;height:20px;margin:-2px -2px -2px 0}
+.agent:hover .open,.agent:focus-within .open{display:flex}
+.agent .open:hover{background:var(--toolbar-hoverBackground)}
+.empty-agents{padding:8px 12px 10px 20px;font-size:12px;color:var(--descriptionForeground)}
+.empty-agents code{font-family:var(--mono);font-size:11px}
+
+/* chat list: chat.css (.interactive-item-container 5px 16px in the view, header avatar 24px, username 13px/600) */
+.chat{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--sideBarSectionHeader-border);padding:8px 0}
+.item{padding:5px 16px;display:flex;flex-direction:column;cursor:default;user-select:text;min-width:0}
+.item .header{display:flex;align-items:center;gap:8px;margin-bottom:8px;min-width:0}
+.avatar{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--chat-avatarBackground);outline:1px solid var(--chat-requestBorder);flex:none;color:var(--foreground)}
+.avatar svg{width:14px;height:14px}
+.username{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.detail{font-size:12px;color:var(--descriptionForeground);white-space:nowrap;flex:none}
+.md{line-height:1.5em;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
+.item.req{align-items:flex-end}
+.bubble{background:var(--chat-requestBubbleBackground);border-radius:12px;padding:8px 12px;max-width:90%;width:fit-content;margin-left:auto;margin-bottom:5px;line-height:1.5em;white-space:pre-wrap;overflow-wrap:anywhere}
+.reqstatus{color:var(--descriptionForeground);font-size:11px;text-align:right;display:flex;align-items:flex-start;justify-content:flex-end;gap:4px;max-width:100%;min-width:0}
+.reqstatus .cdi{width:12px;height:12px;margin-top:1px}
+.reqstatus .ok{color:var(--chat-linesAddedForeground)} .reqstatus .no{color:var(--errorForeground)}
+.reqstatus .txt{overflow-wrap:anywhere;text-align:right}
+.spin svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.welcome{display:flex;flex-direction:column;align-items:center;text-align:center;padding:32px 20px;color:var(--descriptionForeground);gap:8px}
+.welcome .big{width:32px;height:32px}
+.welcome .big svg{width:32px;height:32px;opacity:.6}
+.welcome .h{color:var(--foreground);font-size:13px;font-weight:600}
+.welcome p{margin:0;font-size:12px;line-height:1.5}
+.welcome code{font-family:var(--mono);font-size:11px;background:var(--chat-requestBorder);padding:1px 3px;border-radius:4px}
+
+/* input part: chat.css (.interactive-input-part margin 0 12px; .chat-input-container radius cornerRadius-large 8px, padding 0 6px 6px) */
+.ipart{flex:none;margin:0 12px;padding:4px 0 10px;display:flex;flex-direction:column;min-width:0}
+/* docked widget above the input (chat-editing-session-container): joins the input as one surface */
+.dock{border:1px solid var(--input-border);border-bottom:none;border-radius:8px 8px 0 0;background:var(--editor-background);padding:4px 3px;display:flex;flex-direction:column;gap:2px;max-height:180px;overflow-y:auto;min-width:0}
+.dock .dhead{display:flex;align-items:center;gap:4px;height:22px;padding:0 3px;font-size:12px;color:var(--descriptionForeground)}
+.dock .dhead span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow{display:flex;align-items:center;gap:6px;padding:0 3px;min-height:24px;min-width:0}
+.prow label{font-size:12px;width:72px;flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow input{flex:1;min-width:0;height:22px;border:1px solid var(--input-border);border-radius:4px;background:var(--input-background);color:var(--input-foreground);font:inherit;font-size:12px;padding:0 6px;outline:none}
+.prow input::placeholder{color:var(--input-placeholderForeground)}
+.prow input:focus{border-color:var(--focusBorder)}
+.ibox{background:var(--input-background);border:1px solid var(--input-border);border-radius:8px;padding:0 6px 6px;width:100%;cursor:text;min-width:0}
+.dock:not([hidden]) + .ibox{border-top-left-radius:0;border-top-right-radius:0}
+.ibox.focused{border-color:var(--focusBorder)}
+/* attached-context chips: 18px, 11px, 1px chat.requestBorder, radius 4px, gap 4px, margin-top 6px */
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;cursor:default;min-width:0}
+.chip{display:flex;align-items:center;overflow:hidden;font-size:11px;height:18px;max-width:100%;border:1px solid var(--chat-requestBorder);border-radius:4px;padding:0 6px 0 4px;gap:3px;color:var(--foreground)}
+.chip.rm{padding-right:0}
+.chip.implicit{border-style:dashed}
+.chip .dot{width:6px;height:6px}
+.chip .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.chip .hint{opacity:.7}
+.chip button{all:unset;display:flex;align-items:center;justify-content:center;height:20px;margin:-2px 0;padding:0 2px 0 3px;color:var(--descriptionForeground);cursor:pointer}
+.chip button .cdi{width:12px;height:12px}
+.chip button:hover{background:var(--toolbar-hoverBackground)}
+.chip button:focus-visible{outline:1px solid var(--focusBorder);outline-offset:-2px}
+textarea{display:block;width:100%;border:0;outline:none;resize:none;background:transparent;color:var(--input-foreground);font:inherit;font-size:13px;line-height:20px;padding:8px 0 0 4px;margin:0;min-height:28px;max-height:200px;overflow-y:auto}
+textarea::placeholder{color:var(--input-placeholderForeground)}
+textarea:focus-visible{outline:none}
+/* .chat-input-toolbars: margin-top 4px, gap 2px; picker .action-label height 16px padding 3px 6px; chevron 10px .75 */
+.tbar{display:flex;align-items:center;gap:2px;margin-top:4px;min-width:0}
+.picker{all:unset;box-sizing:content-box;display:flex;align-items:center;height:16px;padding:3px 6px;border-radius:6px;font-size:12px;color:var(--icon-foreground);cursor:pointer;white-space:nowrap;min-width:0;overflow:hidden}
+.picker:hover,.picker[aria-expanded=true]{background:var(--toolbar-hoverBackground)}
+.picker:focus-visible{outline:1px solid var(--focusBorder);outline-offset:-1px}
+.picker .cdi{width:12px;height:12px}
+.picker .lbl{overflow:hidden;text-overflow:ellipsis}
+.picker .chev{margin-left:4px;opacity:.75;width:10px;height:10px}
+.picker .chev svg{width:10px;height:10px}
+.tbar .grow{flex:1;min-width:0}
+/* submit: 22px circle, codicon arrow-up-compact 12px, button.background when enabled */
+.send{all:unset;box-sizing:border-box;width:22px;height:22px;border-radius:9999px;display:flex;align-items:center;justify-content:center;flex:none;cursor:pointer;background:var(--button-background);color:var(--button-foreground);transition:background-color 120ms ease}
+.send svg{width:12px;height:12px;transform:translateY(.5px)}
+.send:hover{background:var(--button-hoverBackground)}
+.send:focus-visible{outline:1px solid var(--focusBorder);outline-offset:1px}
+.send:disabled{background:transparent;color:var(--disabledForeground);cursor:default}
+/* per-recipient results: chat-secondary-toolbar row below the input */
+.results{display:flex;flex-direction:column;gap:2px;padding:6px 4px 0;min-width:0}
+.res{display:flex;align-items:flex-start;gap:4px;font-size:11px;line-height:16px;color:var(--descriptionForeground);min-width:0}
+.res .cdi{width:12px;height:12px;margin-top:2px}
+.res .ok{color:var(--chat-linesAddedForeground)} .res .no{color:var(--errorForeground)}
+.res b{font-weight:600;color:var(--foreground);flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.res .txt{min-width:0;overflow-wrap:anywhere}
+.banner{font-size:12px;color:var(--errorForeground);padding:4px 16px 0}
+/* @-mention suggestions: suggest widget (editorSuggestWidget) above the input */
+.ipart{position:relative}
+.suggest{position:absolute;left:0;right:0;bottom:100%;margin-bottom:2px;background:var(--editor-background);border:1px solid var(--input-border);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.16);padding:2px;max-height:160px;overflow-y:auto;z-index:5}
+.sug{display:flex;align-items:center;gap:6px;height:22px;padding:0 6px;border-radius:4px;font-size:12px;cursor:pointer;min-width:0}
+.sug .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sug .d{color:var(--descriptionForeground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.sug.sel{background:var(--list-activeSelectionBackground);color:var(--list-activeSelectionForeground)}
+.chip.mention .t::before{content:"@";opacity:.7}
+</style></head><body>
+<div class="title">
+  <h2>a2a</h2><span class="sub" id="sub"></span><span class="abadge" id="total" hidden></span><span class="grow"></span>
+  <button class="act" id="openActive" title="Open active agent in iTerm" aria-label="Open active agent in iTerm"></button>
+</div>
+<div class="banner" id="banner" hidden></div>
+<section class="sessions" id="sessions">
+  <div class="section" id="sectionHead" role="button" tabindex="0" aria-expanded="true">
+    <span class="cdi c twist" data-icon="chevron"></span><span class="lbl">Agents</span><span class="count" id="count"></span>
+    <button class="act" id="toggleAll" title="Select all for multi-send" aria-label="Select all for multi-send" hidden></button>
+  </div>
+  <div class="agents" id="agents" role="listbox" aria-label="Agents" aria-multiselectable="true"></div>
+</section>
+<main class="chat" id="chat" aria-live="polite"></main>
+<div class="ipart">
+  <div class="suggest" id="suggest" role="listbox" aria-label="Agents" hidden></div>
+  <div class="dock" id="dock" hidden>
+    <div class="dhead"><span id="dockTitle">Per-agent messages</span></div>
+    <div id="dockRows"></div>
+  </div>
+  <div class="ibox" id="ibox">
+    <div class="chips" id="chips"></div>
+    <textarea id="msg" rows="1" placeholder="Select an agent" aria-label="Message"></textarea>
+    <div class="tbar">
+      <button class="picker" id="mode" title="Send one shared message, or a distinct message per agent" hidden><span class="lbl" id="modeLbl">Shared</span><span class="cdi chev" data-icon="chevron"></span></button>
+      <span class="grow"></span>
+      <button class="send" id="send" disabled title="Send (Enter)" aria-label="Send"></button>
+    </div>
+  </div>
+  <div class="results" id="results" hidden></div>
+</div>
+<script>
+"use strict";
+const T = new URLSearchParams(location.search).get("t");
+// Replaced by the plugin with a fingerprint of this file when it serves the
+// page; the roster reports the current one, and a mismatch reloads the page.
+const UI_VERSION = "__A2A_UI_VERSION__";
+const H = {"Content-Type": "application/json", "X-A2A-Token": T};
+const MAX_HISTORY = 100;
+// Codicon paths (@vscode/codicons src/icons/*.svg). Static markup only; agent
+// data is always inserted with textContent.
+const ICON = {
+  check: ['0 0 12 12', 'M4.52 8.99C4.39 8.99 4.27 8.94 4.17 8.85L1.15 5.86C0.95 5.67 0.95 5.35 1.15 5.15C1.34 4.95 1.66 4.95 1.86 5.15L4.53 7.79L10.15 2.15C10.35 1.95 10.66 1.95 10.86 2.15C11.06 2.34 11.06 2.66 10.86 2.86L4.89 8.85C4.79 8.95 4.66 9 4.54 9L4.52 8.99Z'],
+  close: ['0 0 12 12', 'M10.1499 1.14013C10.3498 0.940199 10.6598 0.940342 10.8599 1.14013C11.0599 1.34013 11.0599 1.65009 10.8599 1.85009L6.71239 5.99267L10.8599 10.1401C11.0599 10.3401 11.0599 10.6501 10.8599 10.8501C10.7599 10.95 10.6302 11.0004 10.5102 11.0005H10.5005C10.3705 11.0005 10.2399 10.9501 10.1499 10.8501L6.00146 6.70165L1.85009 10.8501C1.7502 10.95 1.62037 11.0004 1.50048 11.0005C1.37048 11.0005 1.23989 10.9501 1.14989 10.8501C0.950107 10.6501 0.949965 10.3401 1.14989 10.1401L5.29442 5.99462L1.14989 1.85009C0.950107 1.65008 0.949964 1.34006 1.14989 1.14013C1.34982 0.940199 1.65985 0.940342 1.85985 1.14013L6.00438 5.28466L10.1499 1.14013Z'],
+  up: ['0 0 12 12', 'M10.8502 4.65L6.35019 0.15C6.15019 -0.05 5.84019 -0.05 5.64019 0.15L1.5 4.30025C1.3 4.50025 1.3 4.81025 1.5 5.01025C1.7 5.21025 2.01 5.21025 2.21 5.01025L5.51019 1.71L5.51008 10.5101C5.51008 10.7901 5.73008 11.0101 6.01008 11.0101C6.29008 11.0101 6.51008 10.7901 6.51008 10.5101L6.51019 1.71L10.1602 5.36C10.2602 5.46 10.3902 5.51 10.5102 5.51C10.6302 5.51 10.7702 5.46 10.8602 5.36C11.0602 5.16 11.0602 4.85 10.8602 4.65H10.8502Z'],
+  chevron: ['0 0 12 12', 'M6 8.50023C5.87 8.50023 5.74 8.45023 5.65 8.35023L2.15 4.85023C1.95 4.65023 1.95 4.34023 2.15 4.14023C2.35 3.94023 2.66 3.94023 2.86 4.14023L6.01 7.29023L9.16 4.14023C9.36 3.94023 9.67 3.94023 9.87 4.14023C10.07 4.34023 10.07 4.65023 9.87 4.85023L6.37 8.35023C6.27 8.45023 6.14 8.50023 6.02 8.50023H6Z'],
+  pass: ['0 0 12 12', 'M6 0C2.69 0 0 2.69 0 6C0 9.31 2.69 12 6 12C9.31 12 12 9.31 12 6C12 2.69 9.31 0 6 0ZM8.85 4.85L5.85 7.85C5.75 7.95 5.62 8 5.5 8C5.38 8 5.24 7.95 5.15 7.85L3.4 6.1C3.2 5.9 3.2 5.59 3.4 5.39C3.6 5.19 3.91 5.19 4.11 5.39L5.51 6.79L8.16 4.14C8.36 3.94 8.67 3.94 8.87 4.14C9.07 4.34 9.07 4.65 8.87 4.85H8.85Z'],
+  error: ['0 0 12 12', 'M6 0C2.691 0 0 2.691 0 6C0 9.309 2.691 12 6 12C9.309 12 12 9.309 12 6C12 2.691 9.309 0 6 0ZM6 11C3.243 11 1 8.757 1 6C1 3.243 3.243 1 6 1C8.757 1 11 3.243 11 6C11 8.757 8.757 11 6 11ZM8.354 4.354L6.708 6L8.354 7.646C8.549 7.841 8.549 8.158 8.354 8.353C8.256 8.451 8.128 8.499 8 8.499C7.872 8.499 7.744 8.45 7.646 8.353L6 6.707L4.354 8.353C4.256 8.451 4.128 8.499 4 8.499C3.872 8.499 3.744 8.45 3.646 8.353C3.451 8.158 3.451 7.841 3.646 7.646L5.292 6L3.646 4.354C3.451 4.159 3.451 3.842 3.646 3.647C3.841 3.452 4.158 3.452 4.353 3.647L5.999 5.293L7.645 3.647C7.84 3.452 8.157 3.452 8.352 3.647C8.547 3.842 8.547 4.159 8.352 4.354H8.354Z'],
+  agent: ['0 0 12 12', 'M8.02002 11H7.00002C6.72002 11 6.50002 10.78 6.50002 10.5C6.50002 10.22 6.72002 10 7.00002 10H8.02002C8.20002 10 8.36002 9.9 8.45002 9.75L10.47 6.25C10.56 6.1 10.56 5.9 10.47 5.75L8.45002 2.25C8.24002 1.89 7.61002 1.99 7.50002 2.4L5.46002 9.87C5.28002 10.54 4.67002 11 3.98002 11C3.45002 11 2.95002 10.71 2.68002 10.25L0.66002 6.75C0.39002 6.29 0.39002 5.71 0.66002 5.25L2.68002 1.75C2.95002 1.29 3.44002 1 3.98002 1H5.00002C5.28002 1 5.50002 1.22 5.50002 1.5C5.50002 1.78 5.28002 2 5.00002 2H3.98002C3.80002 2 3.64002 2.1 3.55002 2.25L1.53002 5.75C1.44002 5.9 1.44002 6.1 1.53002 6.25L3.55002 9.75C3.76002 10.11 4.39002 10.01 4.50002 9.6L6.54002 2.13C6.72002 1.46 7.33002 1 8.02002 1C8.55002 1 9.05002 1.29 9.32002 1.75L11.34 5.25C11.61 5.71 11.61 6.29 11.34 6.75L9.32002 10.25C9.05002 10.71 8.56002 11 8.02002 11Z'],
+  terminal: ['0 0 12 12', 'M2.15039 3.12988C2.3504 2.93013 2.66043 2.92996 2.86035 3.12988L5.36035 5.62988C5.56014 5.82981 5.56006 6.13988 5.36035 6.33984L2.86035 8.83984C2.76035 8.93984 2.62977 8.99023 2.50977 8.99023L2.5 9C2.37 9 2.24039 8.94961 2.15039 8.84961C1.95039 8.64961 1.95039 8.33965 2.15039 8.13965L4.2998 5.99023L2.15039 3.83984C1.95039 3.63984 1.95039 3.32988 2.15039 3.12988Z M9.5 8C9.78 8 10 8.22 10 8.5C10 8.78 9.78 9 9.5 9H5.5C5.22 9 5 8.78 5 8.5C5 8.22 5.22 8 5.5 8H9.5Z M9.5 0C10.88 0 12 1.12 12 2.5V9.5C12 10.88 10.88 12 9.5 12H2.5C1.12 12 0 10.88 0 9.5V2.5C0 1.12 1.12 0 2.5 0H9.5ZM2.5 1C1.67 1 1 1.67 1 2.5V9.5C1 10.33 1.67 11 2.5 11H9.5C10.33 11 11 10.33 11 9.5V2.5C11 1.67 10.33 1 9.5 1H2.5Z'],
+  external: ['0 0 16 16', 'M15 9.5V12.5C15 13.879 13.879 15 12.5 15H3.5C2.121 15 1 13.879 1 12.5V3.5C1 2.121 2.121 1 3.5 1H6.5C6.776 1 7 1.224 7 1.5C7 1.776 6.776 2 6.5 2H3.5C2.673 2 2 2.673 2 3.5V12.5C2 13.327 2.673 14 3.5 14H12.5C13.327 14 14 13.327 14 12.5V9.5C14 9.224 14.224 9 14.5 9C14.776 9 15 9.224 15 9.5ZM14.5 1H9.5C9.224 1 9 1.224 9 1.5C9 1.776 9.224 2 9.5 2H13.293L9.147 6.146C8.952 6.341 8.952 6.658 9.147 6.853C9.245 6.951 9.373 6.999 9.501 6.999C9.629 6.999 9.757 6.95 9.855 6.853L14.001 2.707V6.5C14.001 6.776 14.225 7 14.501 7C14.777 7 15.001 6.776 15.001 6.5V1.5C15.001 1.224 14.777 1 14.501 1H14.5Z'],
+  checkAll: ['0 0 16 16', 'M12.354 3.646C12.159 3.451 11.842 3.451 11.647 3.646L6.70798 8.585L7.41498 9.292L12.354 4.353C12.549 4.158 12.549 3.841 12.354 3.646ZM1.85398 8.146C1.65898 7.951 1.34198 7.951 1.14698 8.146C0.951982 8.341 0.951982 8.658 1.14698 8.853L4.14698 11.853C4.24498 11.951 4.37298 11.999 4.50098 11.999C4.62898 11.999 4.75698 11.95 4.85498 11.853L5.20898 11.499L4.50198 10.792L1.85598 8.146H1.85398ZM7.49998 12C7.37198 12 7.24398 11.951 7.14598 11.854L4.14598 8.854C3.95098 8.659 3.95098 8.342 4.14598 8.147C4.34098 7.952 4.65798 7.952 4.85298 8.147L7.49898 10.793L14.645 3.647C14.84 3.452 15.157 3.452 15.352 3.647C15.547 3.842 15.547 4.159 15.352 4.354L7.85198 11.854C7.75398 11.952 7.62598 12 7.49798 12H7.49998Z'],
+  hubot: ['0 0 16 16', 'M6.08984 8.50061C6.4025 8.81148 6.78639 9.04156 7.20801 9.17053C7.62964 9.29946 8.07671 9.32365 8.50977 9.24084V9.25061C9.02899 9.14327 9.50544 8.88575 9.87988 8.51038L10.5801 9.22034C9.8929 9.90037 8.96676 10.2847 8 10.2906C7.51236 10.287 7.03011 10.1884 6.58008 10.0006C6.13513 9.81845 5.73025 9.54991 5.38965 9.21057L6.08984 8.50061Z M6.49023 7.50061H5.49023V6.50061H6.49023V7.50061Z M10.4902 6.50061V7.50061H9.49023V6.50061H10.4902Z M8 1.00061C8.26522 1.00061 8.5195 1.10604 8.70703 1.29358C8.89457 1.48112 9 1.73539 9 2.00061C8.99178 2.17194 8.9397 2.33865 8.84863 2.48401C8.75764 2.62915 8.63082 2.7486 8.48047 2.83069V4.00061H12.4805L12.9805 4.50061V6.53088H13.5L14 7.03088V8.00061L13.5 8.50061H12.9805V11.5006L12.4805 12.0006H9.36035L6.86035 14.7604L6 14.401V12.0006H3.5L3 11.361V8.50061H2.5L2 8.00061V7.03088L2.5 6.53088H3V4.36096L3.53027 4.00061H7.53027V2.86096C7.37357 2.77758 7.24158 2.65367 7.14844 2.50256C7.05529 2.35142 7.00405 2.1781 7 2.00061C7 1.73539 7.10543 1.48112 7.29297 1.29358C7.4805 1.10604 7.73478 1.00061 8 1.00061ZM4 10.861L6.5 11.0006H7V13.191L8.7998 11.151L9.15039 11.0006H12V5.00061H4V10.861Z', 'evenodd'],
+  loading: ['0 0 16 16', 'M13.5 8.5C13.224 8.5 13 8.276 13 8C13 5.243 10.757 3 8 3C5.243 3 3 5.243 3 8C3 8.276 2.776 8.5 2.5 8.5C2.224 8.5 2 8.276 2 8C2 4.691 4.691 2 8 2C11.309 2 14 4.691 14 8C14 8.276 13.776 8.5 13.5 8.5Z'],
+};
+function svg(name) {
+  const [box, d, rule] = ICON[name];
+  return '<svg viewBox="' + box + '" aria-hidden="true"><path' + (rule ? ' fill-rule="evenodd" clip-rule="evenodd"' : '') + ' d="' + d + '"/></svg>';
+}
+function icon(name, compact) { const s = el("span", "cdi" + (compact ? " c" : "")); s.innerHTML = svg(name); return s; }
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+// ---- state -----------------------------------------------------------------
+// Client-side only: the plugin has no history endpoint. `history` records the
+// agent events seen through the roster's lastText plus messages sent from this
+// page, per agent, in localStorage.
+const store = {
+  get(key, fallback) { try { const v = JSON.parse(localStorage.getItem("a2a.toolbelt." + key)); return v == null ? fallback : v; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem("a2a.toolbelt." + key, JSON.stringify(value)); } catch {} },
+};
+const state = {
+  agents: [], loaded: false, error: "",
+  active: store.get("active", null),
+  picked: new Set(store.get("picked", [])),
+  perAgent: false, custom: {}, sending: false,
+  collapsed: store.get("collapsed", false),
+  history: store.get("history", {}),
+  seen: store.get("seen", {}),
+  results: [],
+};
+const rows = new Map();      // agentId -> agent row element
+const dockRows = new Map();  // agentId -> per-agent input row
+let renderedConv = "";       // signature of the conversation currently in the DOM
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {headers: H} : {method: "POST", headers: H, body: JSON.stringify(body)});
+  return r.json();
+}
+
+const STATUS = { live: "live", peer: "peer" };
+const statusClass = (s) => s === "live" ? "" : s === "peer" ? " peer" : " other";
+const byId = (id) => state.agents.find((a) => a.agentId === id);
+// `@name` tokens in the message that name a registered agent.
+const MENTION_RE = /(^|\s)@([A-Za-z0-9_-]+)(?=\s|$)/g;
+function mentions() {
+  const ids = new Set(state.agents.map((a) => a.agentId)); const out = [];
+  for (const m of $("msg").value.matchAll(MENTION_RE)) if (ids.has(m[2]) && !out.includes(m[2])) out.push(m[2]);
+  return out;
+}
+// The message with recognized @mentions removed: what each recipient receives.
+function messageBody() {
+  const ids = new Set(state.agents.map((a) => a.agentId));
+  return $("msg").value.replace(MENTION_RE, (all, pre, id) => ids.has(id) ? pre : all).replace(/[ \t]{2,}/g, " ").trim();
+}
+// Recipients: @mentions and checked agents together; otherwise the active agent.
+const recipients = () => {
+  const ids = state.agents.map((a) => a.agentId);
+  const chosen = new Set([...mentions(), ...state.picked]);
+  if (chosen.size) return ids.filter((id) => chosen.has(id));
+  return state.active && ids.includes(state.active) ? [state.active] : [];
+};
+function removeMention(id) {
+  const m = $("msg");
+  m.value = m.value.replace(new RegExp("(^|\\s)@" + id.replace(/[-]/g, "\\-") + "(?=\\s|$)", "g"), "$1").replace(/^[ \t]+/, "");
+}
+function describe(a) {
+  const bits = [STATUS[a.status] || a.status || "unknown"];
+  if (a.backend) bits.push(a.backend);
+  if (a.cohort) bits.push(a.cohort);
+  return bits.join("-");
+}
+function timeOf(at) { const d = new Date(at); return d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+function pushHistory(agent, entry) {
+  const list = state.history[agent] || (state.history[agent] = []);
+  list.push(entry);
+  if (list.length > MAX_HISTORY) list.splice(0, list.length - MAX_HISTORY);
+  store.set("history", state.history);
+  return entry;
+}
+
+// A new agent event is visible as a changed lastText or a grown unread count.
+function recordEvents() {
+  let changed = false;
+  for (const a of state.agents) {
+    const prev = state.seen[a.agentId];
+    const text = a.lastText || "";
+    const unread = a.unread || 0;
+    if (text && (!prev || prev.text !== text || unread > prev.unread)) {
+      pushHistory(a.agentId, {kind: "event", text, at: Date.now()});
+    }
+    if (!prev || prev.text !== text || prev.unread !== unread) { state.seen[a.agentId] = {text, unread}; changed = true; }
+  }
+  if (changed) store.set("seen", state.seen);
+}
+
+// ---- agent switcher ----------------------------------------------------------
+function makeRow(a) {
+  const id = a.agentId;
+  const row = el("div", "agent"); row.dataset.id = id; row.tabIndex = 0; row.setAttribute("role", "option");
+  const chk = el("button", "chk"); chk.setAttribute("role", "checkbox"); chk.title = "Select for multi-send"; chk.setAttribute("aria-label", "Select " + id + " for multi-send");
+  chk.append(icon("check", true));
+  chk.onclick = (e) => { e.stopPropagation(); togglePick(id); };
+  const trow = el("div", "trow");
+  const open = el("button", "act open"); open.title = "Open in iTerm"; open.setAttribute("aria-label", "Open " + id + " in iTerm"); open.innerHTML = svg("external");
+  open.onclick = (e) => { e.stopPropagation(); focusAgent(id); };
+  const badge = el("span", "cbadge"); badge.hidden = true;
+  trow.append(el("span", "dot"), el("span", "name", id), el("span", "desc"), badge, open);
+  row.append(chk, trow);
+  row.onclick = () => setActive(id);
+  row.ondblclick = () => focusAgent(id);
+  row.onkeydown = (e) => {
+    if (e.target !== row) return;
+    if (e.key === "Enter") { e.preventDefault(); setActive(id); $("msg").focus(); }
+    else if (e.key === " ") { e.preventDefault(); togglePick(id); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const sib = e.key === "ArrowDown" ? row.nextElementSibling : row.previousElementSibling; if (sib && sib.classList.contains("agent")) sib.focus(); }
+  };
+  return row;
+}
+
+function renderAgents() {
+  const list = $("agents");
+  const ids = new Set(state.agents.map((a) => a.agentId));
+  for (const [id, row] of rows) if (!ids.has(id)) { row.remove(); rows.delete(id); }
+  let empty = list.querySelector(".empty-agents");
+  if (!state.agents.length) {
+    if (!empty) {
+      empty = el("div", "empty-agents");
+      empty.append(state.loaded ? "No agents running. Start one with " : "Loading agents…");
+      if (state.loaded) { empty.append(el("code", null, "a2a start <name>")); empty.append("."); }
+      list.replaceChildren(empty);
+    }
+  } else if (empty) empty.remove();
+  state.agents.forEach((a, i) => {
+    let row = rows.get(a.agentId);
+    if (!row) { row = makeRow(a); rows.set(a.agentId, row); }
+    if (list.children[i] !== row) list.insertBefore(row, list.children[i] || null);
+    row.classList.toggle("active", a.agentId === state.active);
+    row.setAttribute("aria-selected", a.agentId === state.active ? "true" : "false");
+    const chk = row.querySelector(".chk"); const on = state.picked.has(a.agentId);
+    chk.classList.toggle("on", on); chk.setAttribute("aria-checked", on ? "true" : "false");
+    row.querySelector(".dot").className = "dot" + statusClass(a.status);
+    row.querySelector(".dot").title = a.status || "";
+    const badge = row.querySelector(".cbadge"); badge.hidden = !a.unread; badge.textContent = a.unread || ""; badge.title = (a.unread || 0) + " unread";
+    row.querySelector(".desc").textContent = describe(a);
+    row.title = a.agentId + " — " + describe(a) + (a.lastText ? "\n" + a.lastText : "");
+  });
+  $("count").textContent = state.agents.length ? String(state.agents.length) : "";
+  const all = $("toggleAll"); all.hidden = state.agents.length < 2;
+  const allPicked = state.agents.length > 0 && state.agents.every((a) => state.picked.has(a.agentId));
+  all.title = allPicked ? "Clear multi-send selection" : "Select all for multi-send";
+  all.setAttribute("aria-label", all.title);
+  all.style.background = allPicked ? "var(--inputOption-activeBackground)" : "";
+  $("sectionHead").classList.toggle("collapsed", state.collapsed);
+  $("sectionHead").setAttribute("aria-expanded", String(!state.collapsed));
+  list.hidden = state.collapsed;
+  const unread = state.agents.reduce((n, a) => n + (a.unread || 0), 0);
+  const total = $("total"); total.hidden = !unread; total.textContent = unread; total.title = unread + " unread agent events";
+}
+
+// ---- conversation ------------------------------------------------------------
+function renderConversation() {
+  const chat = $("chat");
+  const a = state.active ? byId(state.active) : null;
+  const entries = (state.active && state.history[state.active]) || [];
+  const sig = JSON.stringify([state.active, !!a, state.loaded, entries.length, entries.map((e) => e.status + (e.detail || "")).join("|")]);
+  $("sub").textContent = state.active ? "· " + state.active : "";
+  $("openActive").disabled = !a;
+  if (sig === renderedConv) return;
+  renderedConv = sig;
+  const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 24;
+  const frag = document.createDocumentFragment();
+  if (!state.active || !a) {
+    const w = el("div", "welcome"); const big = icon("hubot"); big.classList.add("big");
+    w.append(big, el("div", "h", state.agents.length ? "Pick an agent" : state.loaded ? "No agents" : "Connecting…"));
+    const p = el("p"); p.textContent = state.agents.length ? "Choose an agent above to see its latest events and message it. Check several to send to all of them at once." : "Agents started with a2a appear here.";
+    w.append(p); frag.append(w);
+  } else {
+    for (const e of entries) frag.append(e.kind === "sent" ? requestRow(e) : responseRow(a.agentId, e));
+  }
+  chat.replaceChildren(frag);
+  if (atBottom || entries.length) chat.scrollTop = chat.scrollHeight;
+}
+
+function responseRow(agentId, e) {
+  const item = el("div", "item res-item");
+  const header = el("div", "header");
+  const av = el("div", "avatar"); av.innerHTML = svg("hubot");
+  header.append(av, el("span", "username", agentId), el("span", "detail", timeOf(e.at)));
+  item.append(header, el("div", "md", e.text));
+  return item;
+}
+
+function requestRow(e) {
+  const item = el("div", "item req");
+  item.append(el("div", "bubble", e.text));
+  const st = el("div", "reqstatus");
+  const label = (e.group > 1 ? "to " + e.group + " agents · " : "") + timeOf(e.at) + " · ";
+  if (e.status === "pending") { const s = icon("loading"); s.classList.add("spin"); st.append(s, el("span", "txt", label + "sending…")); }
+  else if (e.status === "ok") { const s = icon("pass", true); s.classList.add("ok"); st.append(s, el("span", "txt", label + "delivered")); }
+  else { const s = icon("error", true); s.classList.add("no"); st.append(s, el("span", "txt", label + (e.detail || "failed"))); }
+  item.append(st);
+  return item;
+}
+
+// ---- input part ---------------------------------------------------------------
+function renderInput() {
+  const rec = recipients();
+  const chips = $("chips"); chips.replaceChildren();
+  const mentioned = new Set(mentions());
+  const explicit = mentioned.size > 0 || state.picked.size > 0;
+  for (const id of rec) {
+    const a = byId(id); const isMention = mentioned.has(id);
+    const c = el("span", "chip" + (explicit ? " rm" : " implicit") + (isMention ? " mention" : ""));
+    c.title = isMention ? "@" + id + " (mentioned)" : explicit ? id : id + " (active agent)";
+    c.append(el("span", "dot" + statusClass(a && a.status)), el("span", "t", id));
+    if (!explicit) c.append(el("span", "hint", "active"));
+    if (explicit) {
+      const x = el("button"); x.title = "Remove " + id; x.setAttribute("aria-label", "Remove " + id); x.append(icon("close", true));
+      x.onclick = (ev) => {
+        ev.stopPropagation();
+        if (isMention) removeMention(id);
+        if (state.picked.has(id)) { state.picked.delete(id); store.set("picked", [...state.picked]); }
+        render(); saveDraft();
+      };
+      c.append(x);
+    }
+    chips.append(c);
+  }
+  chips.hidden = !rec.length;
+  const msg = $("msg");
+  msg.placeholder = !rec.length ? "Type @ to pick agents, or select one above" : rec.length === 1 ? "Message " + rec[0] + " — @ to add agents" : state.perAgent ? "Shared message (used when a row is empty)" : "Message " + rec.length + " agents";
+  const mode = $("mode"); mode.hidden = rec.length < 2;
+  if (rec.length < 2) state.perAgent = false;
+  $("modeLbl").textContent = state.perAgent ? "Per agent" : "Shared";
+  mode.setAttribute("aria-pressed", String(state.perAgent));
+  renderDock(rec);
+  grow();
+  const shared = messageBody();
+  const ready = rec.length > 0 && rec.every((id) => ((state.perAgent && (state.custom[id] || "").trim()) || shared));
+  $("send").disabled = !ready || state.sending;
+}
+
+function renderDock(rec) {
+  const dock = $("dock");
+  dock.hidden = !state.perAgent;
+  if (!state.perAgent) return;
+  $("dockTitle").textContent = "Per-agent messages (" + rec.length + ")";
+  const box = $("dockRows");
+  for (const [id, r] of dockRows) if (!rec.includes(id)) { r.remove(); dockRows.delete(id); }
+  rec.forEach((id, i) => {
+    let r = dockRows.get(id);
+    if (!r) {
+      r = el("div", "prow"); const label = el("label", null, id); label.title = id;
+      const input = el("input"); input.placeholder = "Uses shared message"; input.value = state.custom[id] || ""; input.setAttribute("aria-label", "Message for " + id);
+      input.id = "pa-" + id; label.htmlFor = input.id;
+      input.oninput = () => { state.custom[id] = input.value; renderInput(); };
+      input.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } };
+      r.append(label, input); dockRows.set(id, r);
+    }
+    if (box.children[i] !== r) box.insertBefore(r, box.children[i] || null);
+  });
+}
+
+function renderResults() {
+  const box = $("results"); box.hidden = !state.results.length; box.replaceChildren();
+  for (const x of state.results) {
+    const line = el("div", "res");
+    if (x.pending) { const s = icon("loading"); s.classList.add("spin"); line.append(s); }
+    else { const s = icon(x.ok ? "pass" : "error", true); s.classList.add(x.ok ? "ok" : "no"); line.append(s); }
+    line.append(el("b", null, x.agent), el("span", "txt", x.pending ? "sending…" : x.ok ? "delivered" : (x.detail || "failed")));
+    line.title = x.agent + ": " + (x.pending ? "sending" : x.ok ? "delivered" : x.detail);
+    box.append(line);
+  }
+}
+
+function render() { renderAgents(); renderConversation(); renderInput(); }
+
+// ---- actions --------------------------------------------------------------------
+function setActive(id) { state.active = id; store.set("active", id); render(); }
+function togglePick(id) {
+  state.picked.has(id) ? state.picked.delete(id) : state.picked.add(id);
+  store.set("picked", [...state.picked]);
+  render();
+}
+async function focusAgent(id) {
+  try { const r = await api("/api/focus", {agent: id}); if (!r.ok) showBanner("Open " + id + ": " + (r.error || "failed")); else showBanner(""); }
+  catch (e) { showBanner("Open " + id + ": " + e); }
+  load();
+}
+function showBanner(text) { const b = $("banner"); b.hidden = !text; b.textContent = text; }
+
+async function load() {
+  try {
+    const r = await api("/api/roster");
+    if (!r.ok) { showBanner(r.error || "roster unavailable"); return; }
+    showBanner("");
+    if (r.uiVersion && UI_VERSION.length === 16 && r.uiVersion !== UI_VERSION) { saveDraft(); location.reload(); return; }
+    state.agents = r.agents || []; state.loaded = true;
+    // Prune selection of agents that left; keep the active agent's history.
+    const ids = new Set(state.agents.map((a) => a.agentId));
+    for (const id of [...state.picked]) if (!ids.has(id)) state.picked.delete(id);
+    if ((!state.active || !ids.has(state.active)) && state.agents.length) state.active = state.agents[0].agentId;
+    recordEvents();
+    render();
+  } catch (e) { showBanner("Plugin not reachable"); }
+}
+
+async function send() {
+  const rec = recipients();
+  const shared = messageBody();
+  const targets = rec.map((agent) => ({agent, text: ((state.perAgent && (state.custom[agent] || "").trim()) || shared)})).filter((t) => t.text);
+  if (!targets.length || targets.length !== rec.length || state.sending) return;
+  state.sending = true;
+  const at = Date.now();
+  const pending = new Map(targets.map((t) => [t.agent, pushHistory(t.agent, {kind: "sent", text: t.text, at, status: "pending", group: targets.length})]));
+  state.results = targets.map((t) => ({agent: t.agent, pending: true}));
+  renderResults(); render();
+  let results;
+  try {
+    const r = await api("/api/send", {targets});
+    results = r.ok ? r.results : targets.map((t) => ({agent: t.agent, ok: false, detail: r.error || "send failed"}));
+  } catch (e) { results = targets.map((t) => ({agent: t.agent, ok: false, detail: String(e)})); }
+  for (const x of results) {
+    const entry = pending.get(x.agent);
+    if (entry) { entry.status = x.ok ? "ok" : "err"; entry.detail = x.ok ? "" : x.detail; }
+    if (x.ok) { state.custom[x.agent] = ""; const r = dockRows.get(x.agent); if (r) r.querySelector("input").value = ""; }
+  }
+  store.set("history", state.history);
+  state.results = results;
+  if (results.every((x) => x.ok)) { $("msg").value = ""; saveDraft(); }
+  state.sending = false;
+  renderResults(); render();
+  load();
+}
+
+function grow() { const m = $("msg"); m.style.height = "auto"; m.style.height = Math.min(m.scrollHeight, 200) + "px"; }
+
+// ---- wiring -------------------------------------------------------------------------
+for (const n of document.querySelectorAll("[data-icon]")) n.innerHTML = svg(n.dataset.icon);
+$("send").innerHTML = svg("up");
+$("openActive").innerHTML = svg("external");
+$("toggleAll").innerHTML = svg("checkAll");
+// ---- @-mention suggestions ---------------------------------------------------------
+const sug = { open: false, items: [], index: 0, start: 0 };
+function mentionQuery() {
+  const m = $("msg"); const upto = m.value.slice(0, m.selectionStart);
+  const hit = /(^|\s)@([A-Za-z0-9_-]*)$/.exec(upto);
+  return hit ? { q: hit[2], start: upto.length - hit[2].length - 1 } : null;
+}
+function updateSuggest() {
+  const q = mentionQuery(); const box = $("suggest");
+  if (!q) { closeSuggest(); return; }
+  const taken = new Set(mentions()); const needle = q.q.toLowerCase();
+  const ids = state.agents.map((a) => a.agentId).filter((id) => !taken.has(id) || id.toLowerCase() === needle);
+  const items = ids.filter((id) => id.toLowerCase().startsWith(needle)).concat(ids.filter((id) => !id.toLowerCase().startsWith(needle) && id.toLowerCase().includes(needle)));
+  if (!items.length) { closeSuggest(); return; }
+  sug.open = true; sug.items = items; sug.start = q.start; sug.index = Math.min(sug.index, items.length - 1);
+  box.replaceChildren();
+  items.forEach((id, i) => {
+    const a = byId(id); const row = el("div", "sug" + (i === sug.index ? " sel" : "")); row.setAttribute("role", "option");
+    row.append(el("span", "dot" + statusClass(a && a.status)), el("span", "n", "@" + id), el("span", "d", a ? describe(a) : ""));
+    row.onmousedown = (e) => { e.preventDefault(); acceptSuggest(i); };
+    box.append(row);
+  });
+  box.hidden = false;
+  const sel = box.children[sug.index]; if (sel) sel.scrollIntoView({block: "nearest"});
+}
+function closeSuggest() { sug.open = false; sug.index = 0; $("suggest").hidden = true; }
+function acceptSuggest(i) {
+  const id = sug.items[i]; if (!id) return;
+  const m = $("msg"); const caret = m.selectionStart;
+  const before = m.value.slice(0, sug.start); const after = m.value.slice(caret).replace(/^[A-Za-z0-9_-]*/, "");
+  const insert = "@" + id + " ";
+  m.value = before + insert + after.replace(/^ /, "");
+  const pos = before.length + insert.length; m.setSelectionRange(pos, pos);
+  closeSuggest(); renderInput(); saveDraft(); m.focus();
+}
+
+// Draft survives the self-reload that follows a UI update.
+function saveDraft() { try { sessionStorage.setItem("a2a.toolbelt.draft", JSON.stringify({msg: $("msg").value, custom: state.custom, perAgent: state.perAgent})); } catch {} }
+function restoreDraft() {
+  try { const d = JSON.parse(sessionStorage.getItem("a2a.toolbelt.draft") || "null"); if (d) { $("msg").value = d.msg || ""; state.custom = d.custom || {}; state.perAgent = !!d.perAgent; } } catch {}
+}
+
+$("msg").addEventListener("input", () => { renderInput(); updateSuggest(); saveDraft(); });
+$("msg").addEventListener("click", updateSuggest);
+$("msg").addEventListener("keydown", (e) => {
+  if (sug.open) {
+    if (e.key === "ArrowDown") { e.preventDefault(); sug.index = (sug.index + 1) % sug.items.length; updateSuggest(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); sug.index = (sug.index - 1 + sug.items.length) % sug.items.length; updateSuggest(); return; }
+    if ((e.key === "Enter" || e.key === "Tab") && !e.isComposing) { e.preventDefault(); acceptSuggest(sug.index); return; }
+    if (e.key === "Escape") { e.preventDefault(); closeSuggest(); return; }
+  }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+});
+$("msg").addEventListener("focus", () => $("ibox").classList.add("focused"));
+$("msg").addEventListener("blur", () => { $("ibox").classList.remove("focused"); setTimeout(closeSuggest, 100); });
+$("ibox").addEventListener("mousedown", (e) => { if (e.target === $("ibox") || e.target.classList.contains("chips")) { e.preventDefault(); $("msg").focus(); } });
+$("send").onclick = send;
+$("mode").onclick = () => { state.perAgent = !state.perAgent; renderInput(); if (state.perAgent) { const first = $("dockRows").querySelector("input"); if (first) first.focus(); } };
+$("openActive").onclick = () => { if (state.active) focusAgent(state.active); };
+$("toggleAll").onclick = (e) => {
+  e.stopPropagation();
+  const all = state.agents.every((a) => state.picked.has(a.agentId));
+  if (all) state.picked.clear(); else state.agents.forEach((a) => state.picked.add(a.agentId));
+  store.set("picked", [...state.picked]); render();
+};
+const toggleSection = () => { state.collapsed = !state.collapsed; store.set("collapsed", state.collapsed); renderAgents(); };
+$("sectionHead").onclick = toggleSection;
+$("sectionHead").onkeydown = (e) => { if (e.target === $("sectionHead") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleSection(); } };
+restoreDraft();
+render();
+load(); setInterval(load, 3000);
+</script></body></html>
